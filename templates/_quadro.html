@@ -1,0 +1,130 @@
+{% macro mover(c, para, rotulo, classe='btn-secundario') %}
+<form method="post" action="{{ url_for('demanda_mover', demanda_id=c.id) }}" class="quadro-acao">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="para" value="{{ para }}">
+  <button type="submit" class="btn btn-pequeno {{ classe }}">{{ rotulo }}</button>
+</form>
+{% endmacro %}
+<div class="quadro-cabecalho" data-na-triagem="{{ quadro.na_triagem }}">
+  <div class="quadro-titulo">
+    <h2>Quadro</h2>
+    <span class="contador">{{ quadro.na_triagem }} na triagem</span>
+  </div>
+  <div class="quadro-varredura">
+    {% if quadro.mac_sem_plano %}{% if modo_local %}<a href="{{ url_for('configuracoes_lex') }}#acesso-lex" class="selo selo-alerta">Falta conectar o Lex ao plano do Claude</a>{% else %}<span class="selo selo-alerta">Mac conectado, sem acesso ao plano do Lex</span>{% endif %}{% endif %}
+    {% set ultima = quadro.varredura.ultima %}
+    {% if ultima %}<span class="quadro-ultima">Última varredura: {{ ultima.quando }}</span>{% endif %}
+    {% if ultima %}{% for erro in ultima.erros %}<span class="selo selo-alerta">{{ erro }}</span>{% endfor %}{% endif %}
+    <form method="post" action="{{ url_for('lex_automatico_alternar') }}" class="quadro-acao quadro-chave">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="ligado" value="{{ '0' if quadro.lex_automatico else '1' }}">
+      <button type="submit" class="chave" role="switch" aria-checked="{{ 'true' if quadro.lex_automatico else 'false' }}" title="Com a chave ligada, todo cartão que chega em “Autos baixados” vai sozinho para o Lex.">
+        <span class="chave-trilho" aria-hidden="true"><span class="chave-bola"></span></span>
+        <span class="chave-rotulo">Lex automático</span>
+      </button>
+    </form>
+    <form method="post" action="{{ url_for('varrer') }}" class="quadro-acao">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-pequeno btn-secundario"{% if quadro.varredura.ativa %} disabled{% endif %}>{{ 'Varrendo…' if quadro.varredura.ativa else 'Varrer agora' }}</button>
+    </form>
+  </div>
+</div>
+<div class="quadro-corpo">
+  <div class="quadro-faixa">
+  <div class="quadro-colunas">
+    {% for coluna in quadro.colunas %}
+    <section class="quadro-coluna" aria-label="{{ coluna.titulo }}">
+      <header class="quadro-coluna-topo"><h3>{{ coluna.titulo }}</h3><span class="contador">{{ coluna.cartoes|length }}</span></header>
+      {% for c in coluna.cartoes %}
+      <article class="cartao-demanda{% if c.autos_estado == 'falhou' or (c.coluna == 'lex' and c.lex_estado == 'falhou') %} cartao-falhou{% endif %}" data-cartao="{{ c.id }}">
+        <a class="numero" href="{{ url_for('processo', numero=c.numero) }}">{{ c.numero_formatado }}</a>
+        <p class="cartao-partes">{{ c.cliente or 'Cliente não identificado' }}{% if c.parte_contraria %} <span class="cartao-x">×</span> {{ c.parte_contraria }}{% endif %}</p>
+        {% if c.partes_publicadas %}<p class="cartao-orgao" title="Destinatários das publicações no DJEN">Na publicação: {% for g in c.partes_publicadas %}{% if g.separador %} {{ g.separador }} {% endif %}{{ g.nomes|join(', ') }}{% endfor %}</p>{% endif %}
+        {% if c.orgao %}<p class="cartao-orgao">{{ c.orgao }}</p>{% endif %}
+        {% if c.trecho %}{% if modo_apresentacao %}<p class="cartao-trecho texto-oculto">{{ texto_oculto }}</p>{% else %}<p class="cartao-trecho">{{ c.trecho }}</p>{% endif %}{% endif %}
+        <p class="cartao-meta"><span class="selo selo-neutro">{{ c.origem }}</span> {{ c.data_br }} · chegou {{ c.chegou_ha }}{% if c.n_itens > 1 %} · {{ c.n_itens }} novidades{% endif %}</p>
+        {% if c.coluna == 'acao' %}
+          {% if c.autos_estado == 'falhou' %}
+          <p class="cartao-autos tom-alerta">{% if modo_apresentacao %}Falha ao baixar os autos.{% else %}Falha ao baixar os autos: {{ c.autos_detalhe }}{% endif %}</p>
+          {% elif c.autos_estado == 'baixando' %}
+          <p class="cartao-autos cartao-autos-ativo">Baixando autos…</p>
+          {% else %}
+          <p class="cartao-autos">Autos na fila para baixar</p>
+          {% endif %}
+        {% elif c.coluna == 'autos' and c.autos_detalhe %}
+          {% if c.autos_detalhe.startswith('faltaram') %}<p class="cartao-autos tom-aviso">Autos baixados; {{ c.autos_detalhe }}</p>{% else %}<p class="cartao-autos tom-aviso">{{ c.autos_detalhe[:1]|upper }}{{ c.autos_detalhe[1:] }}</p>{% endif %}
+        {% endif %}
+        {% if c.coluna == 'autos' and c.lex_estado == 'sem_tipo' %}
+          <p class="cartao-autos tom-aviso">O Lex não escolheu o tipo de peça: {% if modo_apresentacao %}<span class="texto-oculto">{{ texto_oculto }}</span>{% else %}{{ c.sem_tipo_explicacao }}{% endif %}</p>
+        {% elif c.coluna == 'lex' %}
+          <p class="cartao-autos cartao-lex{% if c.lex_estado == 'falhou' or c.reserva_vencida %} tom-alerta{% elif c.lex_estado in ('reservado', 'trabalhando') %} cartao-autos-ativo{% endif %}">{{ c.lex_rotulo }}</p>
+          {% if c.lex_orientacao %}{% if modo_apresentacao %}<p class="cartao-orientacao texto-oculto">{{ texto_oculto }}</p>{% else %}<p class="cartao-orientacao">“{{ c.lex_orientacao }}”</p>{% endif %}{% endif %}
+        {% elif c.coluna == 'revisao' %}
+          {% if c.squad_rotulo %}<p class="cartao-tipo">{{ c.squad_rotulo }}</p>{% endif %}
+          {% if c.tempo_total %}<p class="cartao-autos" title="Contado desde que a publicação chegou ao painel.">pronta em {{ c.tempo_total }}{% if c.tempo_lex %} · Lex {{ c.tempo_lex }}{% endif %}</p>{% endif %}
+          {% if (c.citacoes_falhas or 0) > 0 or c.gate_status != 'aprovado' %}
+          <p class="cartao-autos"><span class="selo selo-alerta">citação a conferir</span></p>
+          {% else %}
+          <p class="cartao-autos"><span class="selo selo-ok">citações conferidas</span></p>
+          {% endif %}
+        {% endif %}
+        <div class="cartao-acoes">
+          {% if c.coluna == 'chegou' %}
+            {{ mover(c, 'acao', 'Precisa de ação', '') }}
+            {{ mover(c, 'acompanhar', 'Só acompanhar') }}
+          {% elif c.coluna == 'acao' and c.autos_estado == 'falhou' %}
+            <form method="post" action="{{ url_for('demanda_autos_tentar', demanda_id=c.id) }}" class="quadro-acao">
+              <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-pequeno">Tentar de novo</button>
+            </form>
+            {{ mover(c, 'chegou', 'Voltar à triagem') }}
+          {% elif c.coluna == 'acao' and c.autos_estado == 'na_fila' %}
+            {{ mover(c, 'chegou', 'Voltar à triagem') }}
+          {% elif c.coluna == 'autos' %}
+            <details class="mandar-lex">
+              <summary class="btn btn-pequeno">Mandar pro Lex</summary>
+              <form method="post" action="{{ url_for('demanda_mover', demanda_id=c.id) }}" class="quadro-acao">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                <input type="hidden" name="para" value="lex">
+                <textarea name="orientacao" maxlength="600" rows="3" aria-label="Orientação para o Lex" placeholder="Orientação para o Lex (opcional)"></textarea>
+                <button type="submit" class="btn btn-pequeno">Mandar</button>
+              </form>
+            </details>
+            {{ mover(c, 'resolvida', 'Resolvido', 'btn-secundario') }}
+            {{ mover(c, 'chegou', 'Voltar à triagem') }}
+          {% elif c.coluna == 'lex' %}
+            {% if c.lex_estado == 'falhou' %}
+            <form method="post" action="{{ url_for('demanda_lex_tentar', demanda_id=c.id) }}" class="quadro-acao">
+              <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-pequeno">Tentar de novo</button>
+            </form>
+            {% endif %}
+            {% if c.lex_estado in ('na_fila', 'falhou', 'pausado_limite') or c.reserva_vencida %}
+            {{ mover(c, 'autos', 'Tirar do Lex') }}
+            {% endif %}
+          {% elif c.coluna == 'revisao' %}
+            {{ mover(c, 'protocolado', 'Protocolei', '') }}
+          {% endif %}
+          <a class="btn btn-pequeno btn-secundario" href="{{ url_for('demanda_tela', demanda_id=c.id) }}">Abrir</a>
+        </div>
+      </article>
+      {% else %}
+      <p class="vazio quadro-vazio">{% if coluna.chave == 'chegou' %}Nada novo por aqui.{% elif coluna.chave == 'acao' %}Nenhum processo esperando autos.{% elif coluna.chave == 'lex' %}O Lex está livre.{% elif coluna.chave == 'revisao' %}Nenhuma peça esperando sua revisão.{% else %}Nenhum cartão com autos prontos.{% endif %}</p>
+      {% endfor %}
+    </section>
+    {% endfor %}
+  </div>
+  </div>
+  <aside class="quadro-atividade" aria-label="Atividade agora">
+    <h3>Atividade agora</h3>
+    {% if atividade_agora %}
+    <ol>
+      {% for item in atividade_agora %}
+      <li><span class="quadro-hora">{{ item.hora }}</span> {{ item.texto }}{% if item.numero %} · <a href="{{ url_for('processo', numero=item.numero) }}">{{ item.numero_formatado }}</a>{% endif %}</li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="vazio">Sem movimento ainda.</p>
+    {% endif %}
+  </aside>
+</div>

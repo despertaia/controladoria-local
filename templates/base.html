@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="pt-br" data-apresentacao="{{ '1' if modo_apresentacao else '0' }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf" content="{{ csrf_token() }}">
+  <title>{% block titulo %}Controladoria · Lex Lab{% endblock %}</title>
+  <script>
+    // Aplica o tema escolhido antes de pintar a página (evita piscar).
+    try {
+      var tema = localStorage.getItem('tema');
+      if (tema === 'dark' || tema === 'light') document.documentElement.setAttribute('data-theme', tema);
+    } catch (e) {}
+    // Reflete o tema escuro no botão (leitores de tela) assim que ele existir.
+    document.addEventListener('DOMContentLoaded', function () {
+      var botao = document.getElementById('btn-tema');
+      if (!botao) return;
+      var raiz = document.documentElement.getAttribute('data-theme');
+      var escuro = raiz ? raiz === 'dark'
+        : !!(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches);
+      botao.setAttribute('aria-pressed', escuro ? 'true' : 'false');
+    });
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header class="topo">
+    <div class="topo-conteudo">
+      <a href="{{ url_for('lista') }}" class="marca">
+        <span class="marca-selo" aria-hidden="true">⚖</span>
+        <span class="marca-texto">
+          <strong>Controladoria</strong>
+          <small>Lex Lab · Desperta.IA</small>
+        </span>
+      </a>
+      {% if session.logado or not painel_exige_login %}
+      <nav class="navegacao" aria-label="Seções do painel">
+        {% set no_cockpit = request.endpoint == 'lista' %}
+        {% set na_carteira = request.endpoint in ('carteira_tela', 'processo') %}
+        {% set nos_grupos = request.endpoint and request.endpoint.startswith('grupo') %}
+        {% set nos_resultados = request.endpoint == 'resultados_tela' %}
+        <a href="{{ url_for('lista') }}" class="{{ 'ativo' if no_cockpit }}"{% if no_cockpit %} aria-current="page"{% endif %}>Cockpit{% if na_triagem %} <span class="contador contador-nav" aria-label="{{ na_triagem }} na triagem">{{ na_triagem }}</span>{% endif %}</a>
+        <a href="{{ url_for('carteira_tela') }}" class="{{ 'ativo' if na_carteira }}"{% if na_carteira %} aria-current="page"{% endif %}>Carteira</a>
+        <a href="{{ url_for('grupos_lista') }}" class="{{ 'ativo' if nos_grupos }}"{% if nos_grupos %} aria-current="page"{% endif %}>Grupos</a>
+        <a href="{{ url_for('resultados_tela') }}" class="{{ 'ativo' if nos_resultados }}"{% if nos_resultados %} aria-current="page"{% endif %}>Resultados</a>
+      </nav>
+      {% if not modo_apresentacao %}
+      <form method="get" action="{{ url_for('buscar') }}" class="busca-form" role="search" id="busca-topo-form">
+        <input type="search" name="q" class="busca busca-topo" autocomplete="off"
+               placeholder="Buscar nome ou nº do processo" aria-label="Buscar por nome ou número do processo">
+      </form>
+      {% endif %}
+      {% endif %}
+      <div class="topo-acoes">
+        {% if pje_modo_sessao and session.logado %}
+          {% if pje_conectado %}
+          <form method="post" action="{{ url_for('desconectar_pje') }}">
+            <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-secundario" title="A senha do PJe fica só nesta sessão">PJe conectado</button>
+          </form>
+          {% else %}
+          <a href="{{ url_for('conectar_pje') }}" class="btn">Conectar ao PJe</a>
+          {% endif %}
+        {% endif %}
+        {% if session.logado or not painel_exige_login %}
+        <form method="post" action="{{ url_for('apresentacao_alternar') }}">
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="voltar" value="{{ request.full_path.rstrip('?') }}">
+          <button type="submit" class="btn btn-secundario btn-apresentacao" aria-pressed="{{ 'true' if modo_apresentacao else 'false' }}" aria-label="Modo apresentação" title="Troca nomes por fictícios, mascara os números e oculta textos, para mostrar o sistema sem expor clientes"><span class="rotulo-longo">Modo apresentação</span><span class="rotulo-curto" aria-hidden="true">Apresentação</span></button>
+        </form>
+        {% endif %}
+        {% if session.logado or not painel_exige_login %}
+        <a href="{{ url_for('configuracoes_lex') }}" class="btn-config{{ ' ativo' if request.endpoint and request.endpoint.startswith('configuracoes_lex') }}" aria-label="Configurações do Lex" title="Configurações do Lex">⚙</a>
+        {% endif %}
+        <button type="button" class="btn-tema" id="btn-tema" aria-label="Alternar tema claro e escuro" aria-pressed="false" title="Tema claro/escuro">◐</button>
+        {% if session.logado %}
+        <form method="post" action="{{ url_for('logout') }}">
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+          <button type="submit" class="btn btn-secundario">Sair</button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+  </header>
+  {% if modo_apresentacao %}
+  <div class="faixa-apresentacao" role="status">Modo apresentação ligado · nomes fictícios, números mascarados</div>
+  {% endif %}
+  {% if aviso_versao and not modo_apresentacao %}
+  <div class="faixa-versao" role="status">Nova versão {{ aviso_versao.nova }} disponível. Peça ao Claude: «Atualize a Controladoria do Lex Lab». <a href="{{ url_for('novidades') }}">ver novidades</a></div>
+  {% endif %}
+
+  <main class="conteudo">
+    {% with mensagens = get_flashed_messages(with_categories=true) %}
+      {% for categoria, texto in mensagens %}
+        <div class="aviso aviso-{{ categoria }}">{{ texto }}</div>
+      {% endfor %}
+    {% endwith %}
+
+    {% block conteudo %}{% endblock %}
+  </main>
+
+  <footer class="rodape">
+    Controladoria · Lex Lab, da Desperta.IA — dados de clientes protegidos por sigilo profissional
+    {% if versao_atual %}<p class="rodape-versao">versão {{ versao_atual }} · <a href="{{ url_for('novidades') }}">Novidades</a></p>{% endif %}
+  </footer>
+  <script>
+    // Retorno de carregamento: a busca no DJEN leva alguns segundos.
+    {% if (session.logado or not painel_exige_login) and not modo_apresentacao %}
+    document.getElementById('busca-topo-form').addEventListener('submit', function () {
+      this.querySelector('input').setAttribute('aria-busy', 'true');
+      this.classList.add('buscando');
+    });
+    {% endif %}
+    document.querySelectorAll('form.form-carregando').forEach(function (form) {
+      form.addEventListener('submit', function () {
+        var botao = form.querySelector('button[data-ocupado]');
+        if (!botao) return;
+        // Desabilita depois do envio: um botão desabilitado antes não entra no formulário.
+        setTimeout(function () {
+          botao.dataset.texto = botao.textContent;
+          botao.disabled = true; botao.textContent = botao.dataset.ocupado;
+        }, 0);
+      });
+    });
+    // Página vinda do cache do navegador (Voltar/Avançar) montada com o modo
+    // apresentação diferente do atual: recarrega, para nunca mostrar dado sem máscara.
+    window.addEventListener('pageshow', function (e) {
+      try {
+        var modo = document.documentElement.getAttribute('data-apresentacao');
+        var nav = performance.getEntriesByType ? performance.getEntriesByType('navigation')[0] : null;
+        var doCache = e.persisted || (nav && nav.type === 'back_forward');
+        var atual = sessionStorage.getItem('apresentacao');
+        if (doCache && atual !== null && atual !== modo) { window.location.reload(); return; }
+        sessionStorage.setItem('apresentacao', modo);
+      } catch (erro) {}
+    });
+    // Voltar pelo navegador (cache de páginas): desfaz o "Buscando…" e o estado do topo.
+    window.addEventListener('pageshow', function (e) {
+      if (!e.persisted) return;
+      document.querySelectorAll('[data-ocupado]').forEach(function (botao) {
+        if (botao.dataset.texto) botao.textContent = botao.dataset.texto;
+        botao.disabled = false;
+      });
+      {% if (session.logado or not painel_exige_login) and not modo_apresentacao %}
+      var topo = document.getElementById('busca-topo-form');
+      topo.classList.remove('buscando');
+      topo.querySelector('input').removeAttribute('aria-busy');
+      {% endif %}
+    });
+    // Alterna claro/escuro e guarda a escolha neste navegador.
+    document.getElementById('btn-tema').addEventListener('click', function () {
+      var raiz = document.documentElement;
+      var novo = raiz.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      // Desliga as transições durante a troca (evita botões em cores misturadas).
+      raiz.classList.add('trocando-tema');
+      raiz.setAttribute('data-theme', novo);
+      requestAnimationFrame(function () {
+        requestAnimationFrame(function () { raiz.classList.remove('trocando-tema'); });
+      });
+      this.setAttribute('aria-pressed', novo === 'dark' ? 'true' : 'false');
+      try { localStorage.setItem('tema', novo); } catch (e) {}
+    });
+    // Botão "mostrar/ocultar" dos campos de senha (ver .campo-senha no style.css).
+    document.querySelectorAll('.campo-senha .olho').forEach(function (botao) {
+      botao.addEventListener('click', function () {
+        var campo = botao.previousElementSibling;
+        var vendo = campo.type === 'text';
+        campo.type = vendo ? 'password' : 'text';
+        botao.textContent = vendo ? 'mostrar' : 'ocultar';
+        botao.setAttribute('aria-label', vendo ? 'Mostrar senha' : 'Ocultar senha');
+        campo.focus();
+      });
+    });
+  </script>
+</body>
+</html>

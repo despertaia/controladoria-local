@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block titulo %}Carteira · Controladoria{% endblock %}
+{% block conteudo %}
+
+<div class="cabecalho-pagina">
+  <div>
+    <p class="sobretitulo">Carteira</p>
+    <h1>Seus processos</h1>
+    {% if aba == 'descartados' %}
+    <p class="subtitulo">Processos que você tirou da conferência. A varredura segue de olho neles.</p>
+    {% else %}
+    <p class="subtitulo">Onde a sua OAB atua, sem os arquivados.</p>
+    {% endif %}
+  </div>
+  <div class="cabecalho-acoes">
+    {% if not modo_apresentacao %}
+    <form method="post" action="{{ url_for('consultar') }}" class="consulta-avulsa"
+          onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Consultando…';">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="text" name="numero" class="busca" placeholder="Consultar nº CNJ…"
+             required pattern="[\d\.\-\s]+" aria-label="Número CNJ para consultar">
+      <button type="submit" class="btn btn-secundario">Consultar</button>
+    </form>
+    {% endif %}
+    <a href="{{ url_for('baixar_lote_form') }}" class="btn btn-secundario">Baixar em lote</a>
+    {% if not modo_apresentacao %}<a href="{{ url_for('carteira_exportar') }}" class="btn">Exportar Excel</a>{% endif %}
+  </div>
+</div>
+
+<nav class="abas" aria-label="Abas da carteira">
+  <a href="{{ url_for('carteira_tela', aba='ativa') }}" class="{{ 'ativo' if aba == 'ativa' }}"{% if aba == 'ativa' %} aria-current="page"{% endif %}>Ativa <span class="contador">{{ contagens.ativa }}</span></a>
+  <a href="{{ url_for('carteira_tela', aba='a_conferir') }}" class="{{ 'ativo' if aba == 'a_conferir' }}"{% if aba == 'a_conferir' %} aria-current="page"{% endif %}>A conferir <span class="contador">{{ contagens.a_conferir }}</span></a>
+  {% if contagens.descartados or aba == 'descartados' %}<a href="{{ url_for('carteira_tela', aba='descartados') }}" class="{{ 'ativo' if aba == 'descartados' }}"{% if aba == 'descartados' %} aria-current="page"{% endif %}>Descartados <span class="contador">{{ contagens.descartados }}</span></a>{% endif %}
+</nav>
+
+{% if aba == 'ativa' and not modo_apresentacao %}
+<form method="post" action="{{ url_for('carteira_adicionar') }}" class="adicionar-numero">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="origem" value="manual">
+  <input type="hidden" name="voltar" value="{{ url_for('carteira_tela') }}">
+  <label for="adicionar-numero">Adicionar processo pelo número</label>
+  <div class="adicionar-numero-campo">
+    <input type="text" name="numero" id="adicionar-numero" class="busca" required
+           inputmode="numeric" autocomplete="off" maxlength="30"
+           placeholder="0000000-00.0000.0.00.0000" aria-describedby="adicionar-numero-ajuda">
+    <button type="submit" class="btn btn-secundario">Adicionar e acompanhar</button>
+  </div>
+  <small id="adicionar-numero-ajuda">Os 20 dígitos do CNJ, com ou sem pontos e traço. Ele entra na aba Ativa e passa a ser acompanhado.</small>
+</form>
+{% endif %}
+
+<form method="get" class="filtros">
+  <input type="hidden" name="aba" value="{{ aba }}">
+  <input type="search" name="q" value="{{ busca }}" id="filtro" class="busca" autocomplete="off"
+         placeholder="Buscar por cliente, parte contrária, número ou vara…" aria-label="Buscar na carteira">
+  <select name="tribunal" class="busca seletor" onchange="this.form.submit()" aria-label="Tribunal">
+    <option value="">Todos os tribunais</option>
+    {% for t in tribunais %}<option value="{{ t }}" {{ 'selected' if t == tribunal }}>{{ t }}</option>{% endfor %}
+  </select>
+</form>
+
+{% if linhas %}
+<div class="tabela-wrap tabela-wrap-carteira">
+<table class="tabela tabela-carteira{{ ' com-acao' if aba in ('a_conferir', 'descartados') }}">
+  <thead>
+    <tr>
+      <th>Processo</th>
+      <th>Cliente</th>
+      <th>Parte contrária</th>
+      <th>Último movimento</th>
+      <th class="num">Parado</th>
+      <th>Situação</th>
+      {% if aba in ('a_conferir', 'descartados') %}<th class="acao"><span class="sr-only">Ação</span></th>{% endif %}
+    </tr>
+  </thead>
+  <tbody>
+    {% for p in linhas %}
+    <tr data-href="{{ url_for('processo', numero=p.numero) }}">
+      <td>
+        <a class="numero" href="{{ url_for('processo', numero=p.numero) }}">{{ p.numero_formatado }}</a>
+        <span class="tag">{{ p.tribunal }}{% if p.orgao %} · {{ p.orgao }}{% endif %}</span>
+      </td>
+      <td class="partes" data-rotulo="Cliente">{{ p.cliente or '—' }}</td>
+      <td class="partes" data-rotulo="Parte contrária">{{ p.parte_contraria or '—' }}</td>
+      <td class="ultimo" data-rotulo="Último movimento">
+        {% if p.referencia_br %}<span class="data">{{ p.referencia_br }}</span>{% endif %}
+        <span class="texto">{{ p.ultimo_texto or '—' }}</span>
+      </td>
+      <td class="num" data-rotulo="Parado">
+        {% if p.dias_parado is not none %}<span class="{{ 'tom-aviso' if p.dias_parado > 90 }}">{{ p.dias_parado }} d</span>{% else %}—{% endif %}
+      </td>
+      <td data-rotulo="Situação"><span class="selo selo-{{ p.tom }}">{{ p.situacao }}</span></td>
+      {% if aba in ('a_conferir', 'descartados') %}
+      <td class="acao">
+        {% if aba == 'a_conferir' %}
+        <form method="post" action="{{ url_for('carteira_confirmar') }}">
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="numero" value="{{ p.numero }}">
+          <input type="hidden" name="voltar" value="{{ request.full_path.rstrip('?') }}">
+          <button type="submit" class="btn btn-pequeno" aria-label="É meu: acompanhar {{ p.numero_formatado }}">É meu</button>
+        </form>
+        {% endif %}
+        <form method="post" action="{{ url_for('carteira_descartar' if aba == 'a_conferir' else 'carteira_restaurar') }}">
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="numero" value="{{ p.numero }}">
+          <input type="hidden" name="voltar" value="{{ request.full_path.rstrip('?') }}">
+          <button type="submit" class="btn btn-pequeno btn-secundario" aria-label="{{ 'Descartar' if aba == 'a_conferir' else 'Restaurar' }} {{ p.numero_formatado }}">{{ 'Descartar' if aba == 'a_conferir' else 'Restaurar' }}</button>
+        </form>
+      </td>
+      {% endif %}
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+</div>
+<p class="vazio vazio-filtro" id="filtro-vazio" hidden>Nenhum processo encontrado com essa busca.</p>
+{% else %}
+<div class="cartao"><p class="vazio">Nenhum processo encontrado{% if busca or tribunal %} com esses filtros{% endif %}.</p></div>
+{% endif %}
+
+<script>
+  // Linha inteira clicável; filtro instantâneo enquanto digita (Enter filtra no servidor).
+  document.querySelectorAll('tr[data-href]').forEach(function (tr) {
+    tr.addEventListener('click', function (e) {
+      if (e.target.closest('a, button, form')) return;
+      window.location = tr.dataset.href;
+    });
+  });
+  var filtro = document.getElementById('filtro');
+  if (filtro) {
+    filtro.addEventListener('input', function () {
+      var termo = filtro.value.toLowerCase();
+      var visiveis = 0;
+      document.querySelectorAll('.tabela-carteira tbody tr').forEach(function (tr) {
+        var texto = Array.prototype.map.call(tr.children, function (td) {
+          return td.classList.contains('acao') ? '' : td.textContent;
+        }).join(' ');
+        var aparece = texto.toLowerCase().indexOf(termo) > -1;
+        tr.style.display = aparece ? '' : 'none';
+        if (aparece) visiveis++;
+      });
+      var vazio = document.getElementById('filtro-vazio');
+      if (vazio) vazio.hidden = visiveis > 0;
+    });
+  }
+</script>
+
+{% endblock %}

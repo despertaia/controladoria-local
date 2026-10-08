@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block titulo %}{{ d.numero_formatado }} · Controladoria{% endblock %}
+{% block conteudo %}
+{% import "_publicacao.html" as pub with context %}
+{% set voltar = url_for('demanda_tela', demanda_id=d.id) %}
+
+<a href="{{ url_for('lista') }}" class="voltar">← Quadro</a>
+
+<div class="cartao demanda-cabecalho">
+  <p class="sobretitulo">{{ d.coluna_titulo }}</p>
+  <h1 class="numero-processo">{{ d.numero_formatado }}</h1>
+  {% if d.squad_rotulo %}<p class="demanda-tipo">{{ d.squad_rotulo }}</p>{% endif %}
+  {% if d.cliente or d.parte_contraria %}
+  <p class="demanda-partes">{{ d.cliente or '—' }} <span class="cartao-x">×</span> {{ d.parte_contraria or '—' }}</p>
+  {% else %}
+  {{ pub.partes_publicadas(d.partes_publicadas) }}
+  {% endif %}
+  <p class="demanda-meta">
+    {%- if d.orgao %}<span>{{ d.orgao }}</span><span class="meta-sep" aria-hidden="true"> · </span>{% endif %}
+    {%- if d.origem or d.data_br %}<span>{{ d.origem }}{% if d.data_br %} de {{ d.data_br }}{% endif %}</span><span class="meta-sep" aria-hidden="true"> · </span>{% endif %}
+    {%- if d.lex_rotulo %}<span>{{ d.lex_rotulo }}</span><span class="meta-sep" aria-hidden="true"> · </span>{% endif %}
+    <a href="{{ url_for('processo', numero=d.numero) }}">Ver o processo</a>
+  </p>
+  {% if modo_apresentacao %}
+  {% if d.orientacao %}<p class="demanda-pedido"><strong>Orientação ao Lex:</strong> <span class="texto-oculto">{{ texto_oculto }}</span></p>{% endif %}
+  {% if d.ajuste %}<p class="demanda-pedido"><strong>Último ajuste pedido:</strong> <span class="texto-oculto">{{ texto_oculto }}</span></p>{% endif %}
+  {% if d.trecho and not d.publicacoes %}<p class="demanda-trecho texto-oculto">{{ texto_oculto }}</p>{% endif %}
+  {% else %}
+  {% if d.orientacao %}<p class="demanda-pedido"><strong>Orientação ao Lex:</strong> {{ d.orientacao }}</p>{% endif %}
+  {% if d.ajuste %}<p class="demanda-pedido"><strong>Último ajuste pedido:</strong> {{ d.ajuste }}</p>{% endif %}
+  {% if d.trecho and not d.publicacoes %}<p class="demanda-trecho">{{ d.trecho }}</p>{% endif %}
+  {% endif %}
+</div>
+
+{{ pub.decisao(d.monitoramento, d.numero, voltar) }}
+
+{% if d.pronta and d.cronometro.tempo_total %}
+<div class="cartao demanda-cronometro" role="status">
+  <p class="demanda-cronometro-total">Pronta em {{ d.cronometro.tempo_total }} desde que a publicação chegou{% if d.cronometro.tempo_lex %} <span class="demanda-cronometro-lex">· Lex trabalhou {{ d.cronometro.tempo_lex }}</span>{% endif %}</p>
+</div>
+{% endif %}
+
+<div class="cartao demanda-acoes">
+  {% if d.coluna == 'revisao' %}
+    <form method="post" action="{{ url_for('demanda_mover', demanda_id=d.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="voltar" value="{{ voltar }}">
+      <input type="hidden" name="para" value="protocolado">
+      <button type="submit" class="btn">Protocolei</button>
+    </form>
+    <form method="post" action="{{ url_for('demanda_mover', demanda_id=d.id) }}" class="demanda-devolver">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="voltar" value="{{ voltar }}">
+      <input type="hidden" name="para" value="lex">
+      <label for="ajuste">Devolver ao Lex com ajuste</label>
+      <textarea id="ajuste" name="ajuste" required maxlength="2000" rows="3" placeholder="O que o Lex deve mudar na peça"></textarea>
+      <button type="submit" class="btn btn-secundario">Devolver ao Lex com ajuste</button>
+    </form>
+  {% elif d.coluna == 'lex' %}
+    {% if d.lex_estado == 'falhou' %}
+    <form method="post" action="{{ url_for('demanda_lex_tentar', demanda_id=d.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="voltar" value="{{ voltar }}">
+      <button type="submit" class="btn">Tentar de novo</button>
+    </form>
+    {% endif %}
+    {% if d.pode_desistir %}
+    <form method="post" action="{{ url_for('demanda_mover', demanda_id=d.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="voltar" value="{{ voltar }}">
+      <input type="hidden" name="para" value="revisao">
+      <button type="submit" class="btn btn-secundario" title="Cancela o ajuste e devolve a peça anterior para a sua revisão">Desistir do ajuste</button>
+    </form>
+    {% endif %}
+    {% if d.lex_estado in ('na_fila', 'falhou', 'pausado_limite') or d.reserva_vencida %}
+    <form method="post" action="{{ url_for('demanda_mover', demanda_id=d.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="voltar" value="{{ voltar }}">
+      <input type="hidden" name="para" value="autos">
+      <button type="submit" class="btn btn-secundario">Tirar do Lex</button>
+    </form>
+    {% endif %}
+    {% if d.reserva_vencida %}<p class="demanda-pedido">{% if modo_local %}O Lex parou de responder (o computador desligou ou dormiu?). Tire o cartão do Lex ou espere: ele volta quando o computador ligar.{% else %}O Mac parou de responder. Tire o cartão do Lex ou espere o Mac voltar.{% endif %}</p>{% endif %}
+    {% if d.lex_frase %}<p class="demanda-pedido">{{ d.lex_frase[:1]|upper }}{{ d.lex_frase[1:] }}.</p>{% endif %}
+  {% elif d.coluna == 'protocolado' %}
+    <form method="post" action="{{ url_for('demanda_mover', demanda_id=d.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="voltar" value="{{ voltar }}">
+      <input type="hidden" name="para" value="revisao">
+      <button type="submit" class="btn btn-secundario">Desfazer: voltar para Sua revisão</button>
+    </form>
+  {% elif d.coluna == 'autos' and d.lex_estado == 'sem_tipo' %}
+    <p class="demanda-pedido">{{ d.sem_tipo_titulo }}: {% if modo_apresentacao %}<span class="texto-oculto">{{ texto_oculto }}</span>{% else %}{{ d.sem_tipo_explicacao }}{% endif %}</p>
+  {% elif d.coluna == 'autos' and d.lex_frase %}
+    <p class="demanda-pedido">{{ d.lex_frase }}</p>
+  {% else %}
+    <p class="vazio">Sem ação do Lex neste cartão agora.</p>
+  {% endif %}
+</div>
+
+{% if d.publicacoes %}
+<div class="cartao demanda-publicacoes">
+  <h2>{{ 'Publicação' if d.publicacoes|length == 1 else 'Publicações' }}{% if d.publicacoes|length > 1 %} <span class="contador">{{ d.publicacoes|length }}</span>{% endif %}</h2>
+  {% for p in d.publicacoes %}
+  <article class="publicacao">
+    <p class="publicacao-meta">
+      <span>{{ p.data_br }}</span>
+      {%- if p.orgao %}<span class="meta-sep" aria-hidden="true"> · </span><span>{{ p.orgao }}</span>{% endif %}
+      {%- if p.tipo %}<span class="meta-sep" aria-hidden="true"> · </span><span>{{ p.tipo }}</span>{% endif %}
+    </p>
+    {% if p.trecho %}{% if modo_apresentacao %}<p class="demanda-trecho texto-oculto">{{ texto_oculto }}</p>{% else %}<p class="demanda-trecho">{{ p.trecho }}</p>{% endif %}{% endif %}
+    <div class="publicacao-acoes">
+      {{ pub.integra(p.integra) }}
+      {{ pub.link_tribunal(p.link) }}
+    </div>
+  </article>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% if d.pronta %}
+  {% set p = d.pronta %}
+  <div class="cartao">
+    <h2>{{ 'Peça anterior' if d.coluna == 'lex' else 'Peça' }}{% if p.squad_rotulo %} <span class="contador">{{ p.squad_rotulo }}</span>{% endif %}</h2>
+    {% if d.coluna == 'lex' %}<p class="demanda-pedido">Esta é a versão {{ p.n }}, a última que ficou pronta
+      {%- if d.reserva_vencida %}; {{ 'o Lex' if modo_local else 'o Mac' }} parou de responder durante o ajuste.
+      {%- elif d.lex_estado in ('reservado', 'trabalhando') %}; o Lex está trabalhando no ajuste.
+      {%- elif d.lex_estado == 'na_fila' %}; ajuste na fila do Lex.
+      {%- elif d.lex_estado == 'falhou' %}; o ajuste falhou.
+      {%- elif d.lex_estado == 'pausado_limite' %}; ajuste pausado: limite do plano.
+      {%- else %}.{% endif %}</p>{% endif %}
+    {% if modo_apresentacao %}
+    <p class="vazio">A peça não aparece no modo apresentação.</p>
+    {% elif p.tem_pdf %}
+    <iframe class="peca-pdf" src="{{ url_for('demanda_peca_pdf', demanda_id=d.id, n=p.n) }}" title="Peça para leitura"></iframe>
+    {% else %}
+    <p class="vazio">O PDF desta peça não está disponível.</p>
+    {% endif %}
+    <div class="cartao-acoes">
+      {% if p.tem_docx and not modo_apresentacao %}<a class="btn btn-secundario" href="{{ url_for('demanda_peca_docx', demanda_id=d.id, n=p.n) }}">Baixar Word</a>{% endif %}
+    </div>
+  </div>
+
+  <div class="cartao">
+    <h2>O que conferir</h2>
+    {% if p.pendencias and modo_apresentacao %}
+    <p class="texto-oculto">{{ p.pendencias|length }} pendência(s) · {{ texto_oculto }}</p>
+    {% elif p.pendencias %}
+    <ul class="demanda-pendencias">
+      {% for item in p.pendencias %}
+      <li>
+        <strong>{{ item.marcador }}</strong>
+        {% if item.onde %}<span class="demanda-onde">em {{ item.onde }}</span>{% endif %}
+        {% if item.diligencia %}<p>{{ item.diligencia }}</p>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <p class="vazio">Nenhuma pendência apontada pelo Lex.</p>
+    {% endif %}
+  </div>
+
+  <div class="cartao">
+    <h2>Citações <span class="selo {{ 'selo-ok' if (p.citacoes_falhas or 0) == 0 and p.gate_status == 'aprovado' else 'selo-alerta' }}">{{ p.gate_status or 'sem relatório' }}</span></h2>
+    {% if p.citacoes %}
+    <div class="tabela-wrap">
+      <table class="tabela tabela-citacoes">
+        <thead><tr><th>Citação</th><th>Situação</th><th>Fonte</th></tr></thead>
+        <tbody>
+          {% for c in p.citacoes %}
+          <tr>
+            <td>{{ c.title }}</td>
+            <td><span class="selo selo-{{ selo_citacao(c.status) }}">{{ c.status or 'sem status' }}</span></td>
+            <td>{% if c.source_url %}<a href="{{ c.source_url }}" target="_blank" rel="noopener noreferrer">{{ c.source_url }}</a>{% else %}<span class="vazio">sem fonte</span>{% endif %}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="vazio">Nenhuma citação registrada no relatório.</p>
+    {% endif %}
+  </div>
+
+  <div class="cartao">
+    <h2>Nota ao revisor</h2>
+    {% if p.nota and modo_apresentacao %}<p class="texto-oculto">{{ texto_oculto }}</p>{% elif p.nota %}<div class="nota-revisor">{{ p.nota|nota_md }}</div>{% else %}<p class="vazio">Sem nota.</p>{% endif %}
+  </div>
+{% endif %}
+
+{% if d.execucoes %}
+<div class="cartao">
+  <h2>Execuções do Lex</h2>
+  <ul class="demanda-historico">
+    {% for e in d.execucoes %}
+    <li><span class="quadro-hora">{{ e.inicio }}</span> #{{ e.n }} · {{ e.resultado_rotulo or 'em andamento' }}{% if e.squad_rotulo %} · {{ e.squad_rotulo }}{% endif %}{% if e.minutos is not none %} · {{ e.minutos|round|int }} min{% endif %}{% if e.frase %} · {{ e.frase }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<div class="cartao">
+  <h2>Histórico</h2>
+  {% if d.historico %}
+  <ul class="demanda-historico">
+    {% for h in d.historico %}
+    <li><span class="quadro-hora">{{ h.quando }}</span> {{ h.texto_curto if modo_apresentacao else h.texto }}</li>
+    {% endfor %}
+  </ul>
+  {% else %}
+  <p class="vazio">Sem movimento registrado.</p>
+  {% endif %}
+</div>
+{% endblock %}

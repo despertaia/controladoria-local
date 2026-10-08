@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block titulo %}Conectar ao PJe · Controladoria{% endblock %}
+{% block conteudo %}
+
+<div class="cartao" style="max-width:420px; margin:40px auto;">
+  <h1 style="font-size:20px; margin-bottom:4px;">🔐 Conectar ao PJe</h1>
+  <p class="subtitulo" style="margin-bottom:18px;">
+    Informe seu CPF e a senha do PJe para consultar o tribunal. A senha é usada
+    <strong>apenas durante esta sessão</strong> e <strong>nunca é gravada</strong>
+    no servidor. Seu navegador pode oferecer para salvá-la e preencher
+    automaticamente nas próximas vezes.
+  </p>
+  <form method="post" action="{{ url_for('conectar_pje') }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <label style="display:block; font-size:13px; color:var(--cinza); margin-bottom:4px;">CPF</label>
+    <input type="text" name="cpf" class="busca" inputmode="numeric" autofocus
+           autocomplete="username" placeholder="somente números"
+           style="width:100%; margin:0 0 14px;">
+    <label style="display:block; font-size:13px; color:var(--cinza); margin-bottom:4px;">Senha do PJe</label>
+    <div class="campo-senha">
+      <input type="password" name="senha" class="busca" autocomplete="current-password"
+             style="width:100%;">
+      <button type="button" class="olho" aria-label="Mostrar senha">mostrar</button>
+    </div>
+    <button type="submit" class="btn" style="width:100%;">Conectar</button>
+  </form>
+</div>
+
+{% endblock %}

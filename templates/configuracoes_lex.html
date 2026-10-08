@@ -1,0 +1,116 @@
+{% extends "base.html" %}
+{% block titulo %}Configurações do Lex · Controladoria{% endblock %}
+{% block conteudo %}
+<div class="config-lex">
+  <a href="{{ url_for('lista') }}" class="voltar">← Voltar ao Cockpit</a>
+  <h1>Configurações do Lex</h1>
+
+  {% if chave %}
+  <section class="cartao" aria-labelledby="titulo-chave-nova">
+    <h2 id="titulo-chave-nova">Chave nova gerada</h2>
+    <p><strong>Esta é a única vez que a chave aparece.</strong> Copie agora; depois só será possível gerar outra. A chave anterior, se havia, deixou de valer.</p>
+    <p class="aviso aviso-erro" role="alert">Não recarregue esta página: recarregar gera outra chave, e esta deixa de valer.</p>
+    <div class="chave-visivel">
+      <input type="text" class="busca" id="chave-nova" value="{{ chave }}" readonly
+             autocomplete="off" spellcheck="false" aria-label="Chave da ponte">
+      <button type="button" class="btn" id="copiar-chave">Copiar</button>
+    </div>
+    <ol class="chave-passos">
+      <li>Clique em “Copiar”.</li>
+      <li>No Mac, abra o Terminal e rode <code>cd ~/Projetos/controladoria &amp;&amp; .venv/bin/python -m ponte_mac guardar-chave</code> (troque a pasta se o repositório estiver em outro lugar): ele lê a chave da área de transferência e a guarda nas Chaves do macOS.</li>
+    </ol>
+    <div class="config-linha">
+      <a href="{{ url_for('configuracoes_lex') }}" class="btn btn-secundario">Já guardei a chave</a>
+    </div>
+  </section>
+  <script>
+    document.getElementById('copiar-chave').addEventListener('click', function () {
+      var campo = document.getElementById('chave-nova');
+      var botao = this;
+      function feito() {
+        botao.textContent = 'Copiada';
+        setTimeout(function () { botao.textContent = 'Copiar'; }, 2000);
+      }
+      campo.focus(); campo.select();
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        navigator.clipboard.writeText(campo.value).then(feito, function () {
+          try { if (document.execCommand('copy')) feito(); } catch (e) {}
+        });
+      } else {
+        try { if (document.execCommand('copy')) feito(); } catch (e) {}
+      }
+    });
+  </script>
+  {% else %}
+  {% if modo_local %}
+  {% include "_acesso_lex_local.html" %}
+
+  <section class="cartao" aria-labelledby="titulo-escritorio">
+    <h2 id="titulo-escritorio">Configuração do escritório</h2>
+    <p>Tribunal, senha do PJe e dados da OAB. As senhas ficam no cofre deste computador.</p>
+    <div class="config-linha">
+      <a href="{{ url_for('local.configurar') }}" class="btn btn-secundario">Configuração do escritório</a>
+    </div>
+  </section>
+  {% endif %}
+  <section class="cartao" aria-labelledby="titulo-automatico">
+    <h2 id="titulo-automatico">Lex automático</h2>
+    <p>Com a chave ligada, todo cartão que chega em “Autos baixados” vai sozinho para o Lex, que prepara a minuta para você revisar. Nada é protocolado: a revisão é sempre sua.</p>
+    <form method="post" action="{{ url_for('lex_automatico_alternar') }}" class="config-linha">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="ligado" value="{{ '0' if automatico else '1' }}">
+      <input type="hidden" name="voltar" value="{{ url_for('configuracoes_lex') }}">
+      <button type="submit" class="chave" role="switch" aria-checked="{{ 'true' if automatico else 'false' }}">
+        <span class="chave-trilho" aria-hidden="true"><span class="chave-bola"></span></span>
+        <span class="chave-rotulo">Lex automático: {{ 'ligado' if automatico else 'desligado' }}</span>
+      </button>
+    </form>
+  </section>
+
+  <section class="cartao" aria-labelledby="titulo-mac">
+    {% if modo_local %}
+    <h2 id="titulo-mac">Lex neste computador</h2>
+    <p>O Lex roda aqui junto com a Controladoria: de tempos em tempos ele busca os cartões e devolve as peças. O computador precisa estar ligado.</p>
+    {% else %}
+    <h2 id="titulo-mac">Conexão com o Mac</h2>
+    <p>O Mac do escritório consulta o painel de tempos em tempos para buscar os cartões do Lex e devolver as peças.</p>
+    {% endif %}
+    <div class="config-linha">
+      <span class="selo selo-{{ mac.tom }}">{{ mac.texto }}</span>
+    </div>
+    {% if chaves_invalidas %}
+    <p class="tom-aviso">Tentativas com chave inválida: {{ chaves_invalidas }}{% if ultima_invalida %}, última {{ ultima_invalida }}{% endif %}.</p>
+    {% endif %}
+  </section>
+
+  {% if modo_local %}
+  {# Na instalação local a chave da ponte é automática (ponte_mac.local): nada a mostrar. #}
+  {% else %}
+  <section class="cartao" aria-labelledby="titulo-chave">
+    <h2 id="titulo-chave">Chave da ponte</h2>
+    {% if tem_chave %}
+    <p>Chave gerada em {{ chave_criada_em }}. Por segurança ela não pode ser exibida de novo.</p>
+    {% else %}
+    <p>Nenhuma chave gerada. Sem chave, o Mac não consegue se conectar.</p>
+    {% endif %}
+    {% if modo_apresentacao %}
+    <p>Indisponível no modo apresentação: desligue o modo no topo da página para gerar ou revogar a chave.</p>
+    {% else %}
+    <div class="config-linha">
+      <form method="post" action="{{ url_for('configuracoes_lex_chave') }}"{% if tem_chave %} onsubmit="return confirm('Gerar uma nova chave faz a atual deixar de valer. O Mac precisará guardar a nova. Continuar?');"{% endif %}>
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button type="submit" class="btn">{{ 'Gerar nova chave' if tem_chave else 'Gerar chave' }}</button>
+      </form>
+      {% if tem_chave %}
+      <form method="post" action="{{ url_for('configuracoes_lex_revogar') }}" onsubmit="return confirm('Revogar a chave? O Mac perde o acesso até você gerar outra.');">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-secundario">Revogar</button>
+      </form>
+      {% endif %}
+    </div>
+    {% endif %}
+  </section>
+  {% endif %}
+  {% endif %}
+</div>
+{% endblock %}

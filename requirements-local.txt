@@ -1,0 +1,14 @@
+# Instalação no computador do advogado (Windows e Mac): requirements.txt sem o
+# gunicorn (servidor só de Linux), mais o servidor waitress, o cofre do sistema
+# (keyring), a tabela de fusos (tzdata, que o Windows não traz) e, no Windows, o
+# pseudoterminal do botão "Conectar o Lex" (pywinpty; no Mac o pty já vem no Python).
+zeep==4.2.1
+python-dotenv==1.0.1
+requests==2.32.3
+openpyxl==3.1.5
+Flask==3.0.3
+anthropic==0.74.1
+waitress==3.0.2
+keyring==25.7.0
+tzdata==2026.5
+pywinpty==3.0.5; sys_platform == "win32"

@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block titulo %}{{ grupo.nome }} · Grupos{% endblock %}
+{% block conteudo %}
+
+<a href="{{ url_for('grupos_lista') }}" class="voltar">← Grupos</a>
+
+<div class="cabecalho-pagina">
+  <div>
+    <h1>{{ grupo.nome }}</h1>
+    <p class="subtitulo">
+      {{ grupo.numeros|length }} processo(s){% if grupo.descricao %} · {{ grupo.descricao }}{% endif %}
+    </p>
+  </div>
+</div>
+
+<div class="cartao" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+  <form method="post" action="{{ url_for('grupo_baixar', slug=grupo.slug) }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <button type="submit" class="btn">⬇ Baixar todos (segundo plano)</button>
+  </form>
+  <form method="post" action="{{ url_for('grupo_atualizar', slug=grupo.slug) }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-secundario">↻ Atualizar andamentos</button>
+  </form>
+  <a href="{{ url_for('grupo_exportar', slug=grupo.slug) }}" class="btn btn-secundario">📊 Exportar planilha</a>
+  <a id="link-zip" href="{{ url_for('grupo_zip', slug=grupo.slug) }}" class="btn btn-secundario">💾 Baixar .zip do grupo</a>
+  <form method="post" action="{{ url_for('grupo_excluir', slug=grupo.slug) }}" style="margin-left:auto;"
+        onsubmit="return confirm('Excluir este grupo? As peças e o cache são mantidos.');">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <button type="submit" class="btn btn-secundario" style="color:var(--vermelho);">Excluir grupo</button>
+  </form>
+</div>
+
+<!-- Progresso do download em segundo plano (preenchido por polling) -->
+<div id="painel-progresso" class="cartao" style="display:none;">
+  <div style="display:flex; justify-content:space-between; align-items:center;">
+    <h2 style="margin:0;">Progresso</h2>
+    <span id="prog-estado" class="tag"></span>
+  </div>
+  <div style="background:var(--fundo); border-radius:999px; height:10px; margin:12px 0; overflow:hidden;">
+    <div id="prog-barra" style="height:100%; width:0%; background:var(--azul); transition:width .4s;"></div>
+  </div>
+  <div id="prog-texto" class="subtitulo" style="margin:0 0 8px;"></div>
+  <pre id="prog-log" style="background:#0f172a; color:#e2e8f0; padding:12px; border-radius:var(--raio);
+       max-height:240px; overflow:auto; white-space:pre-wrap; font-size:12.5px; margin:0;"></pre>
+</div>
+
+<section class="cartao">
+  <h2>Processos <span class="contador">{{ processos|length }}</span></h2>
+  <div class="tabela-wrap">
+  <table class="tabela">
+    <thead>
+      <tr><th>Processo</th><th>Partes</th><th>Último andamento</th><th>Peças</th></tr>
+    </thead>
+    <tbody>
+      {% for p in processos %}
+      <tr class="linha" onclick="window.location='{{ url_for('processo', numero=p.numero) }}'">
+        <td><span class="numero">{{ p.formatado }}</span></td>
+        <td class="partes">
+          {% if p.dados and p.dados.partes %}
+            {% for polo in p.dados.partes %}
+              <div><strong>{{ polo.polo[:12] }}:</strong> {{ polo.nomes|join(', ') }}
+                {%- if polo.integrantes %}{% for ig in polo.integrantes %}{% if ig.intimacao_pendente %}
+                  <span class="tag" style="background:var(--vermelho-fundo); color:var(--vermelho);">intimação</span>{% endif %}{% endfor %}{% endif %}
+              </div>
+            {% endfor %}
+          {% else %}<span class="pendente">não sincronizado</span>{% endif %}
+        </td>
+        <td class="ultimo">
+          {% if p.dados and p.dados.andamentos %}
+            <span class="data">{{ p.dados.andamentos[0].data }}</span>
+            <span class="texto">{{ p.dados.andamentos[0].texto }}</span>
+          {% else %}<span class="pendente">—</span>{% endif %}
+        </td>
+        <td>{% if p.baixado %}<span class="tag" style="background:var(--verde-fundo); color:var(--verde);">baixado</span>{% else %}<span class="pendente">—</span>{% endif %}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+</section>
+
+<script>
+(function () {
+  const statusUrl = "{{ url_for('grupo_status', slug=grupo.slug) }}";
+  const painel = document.getElementById('painel-progresso');
+  const barra = document.getElementById('prog-barra');
+  const estado = document.getElementById('prog-estado');
+  const texto = document.getElementById('prog-texto');
+  const log = document.getElementById('prog-log');
+  const linkZip = document.getElementById('link-zip');
+  const ROTULO = { na_fila:'na fila', rodando:'baixando…', concluido:'concluído', erro:'erro' };
+  let timer = null;
+
+  async function tick() {
+    let st;
+    try { st = await (await fetch(statusUrl)).json(); } catch (e) { return; }
+    if (!st || st.estado === 'nunca') { painel.style.display = 'none'; return; }
+    painel.style.display = 'block';
+    estado.textContent = ROTULO[st.estado] || st.estado;
+    const total = st.total || 0, idx = st.indice || 0;
+    barra.style.width = total ? Math.round(100 * idx / total) + '%' : '0%';
+    let t = total ? (idx + '/' + total + ' processos') : '';
+    if (st.processo_atual && st.estado === 'rodando') t += ' · atual: ' + st.processo_atual + (st.peca ? ' ('+st.peca+')' : '');
+    if (st.ok != null) t += ' · ' + st.ok + ' peça(s), ' + (st.falhas||0) + ' falha(s)';
+    texto.textContent = t;
+    log.textContent = (st.linhas || []).join('\n');
+    log.scrollTop = log.scrollHeight;
+    if (st.estado === 'concluido') { linkZip.style.boxShadow = '0 0 0 3px rgba(59,130,246,.45)'; }
+    // continua o polling só enquanto há trabalho
+    if (st.estado === 'rodando' || st.estado === 'na_fila') {
+      if (!timer) timer = setInterval(tick, 3000);
+    } else if (timer) { clearInterval(timer); timer = null; }
+  }
+  tick();
+  timer = setInterval(tick, 3000);
+})();
+</script>
+
+{% endblock %}

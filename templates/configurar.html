@@ -1,0 +1,107 @@
+{% extends "base.html" %}
+{% block titulo %}Configuração do escritório · Controladoria{% endblock %}
+{% block conteudo %}
+<div class="config-lex config-escritorio">
+  {% if not primeira_vez %}
+  <a href="{{ url_for('lista') }}" class="voltar">← Voltar ao Cockpit</a>
+  {% endif %}
+  <h1>Configuração do escritório</h1>
+  <p class="subtitulo">
+    {% if primeira_vez %}
+    Falta pouco: informe como o seu nome sai no Diário e a sua OAB. Isso basta para a Controladoria montar a carteira sozinha. A senha do PJe é opcional.
+    {% else %}
+    Troque aqui os dados da OAB, os tribunais ou as senhas do PJe.
+    {% endif %}
+  </p>
+
+  <form method="post" action="{{ url_for('local.configurar') }}" class="form-carregando config-form">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+
+    <section class="cartao" aria-labelledby="titulo-advogado">
+      <h2 id="titulo-advogado">Advogado</h2>
+      <p>É por estes dados que a Controladoria encontra as suas publicações no Diário de Justiça Eletrônico (DJEN), de todos os tribunais.</p>
+      <label class="campo" for="campo-nome">Nome exatamente como sai no DJEN</label>
+      <input type="text" name="advogado_nome" id="campo-nome" class="busca" autocomplete="name"
+             value="{{ v.advogado_nome }}" required>
+      <p class="campo-ajuda">Do jeito que aparece nas publicações do Diário de Justiça Eletrônico, com acentos. É por ele e pela OAB que as intimações são encontradas.</p>
+
+      <div class="campo-linha">
+        <div>
+          <label class="campo" for="campo-oab">Número da OAB</label>
+          <input type="text" name="oab_numero" id="campo-oab" class="busca" inputmode="numeric"
+                 placeholder="somente números" value="{{ v.oab_numero }}" required>
+        </div>
+        <div>
+          <label class="campo" for="campo-uf">UF</label>
+          <select name="oab_uf" id="campo-uf" class="busca" required>
+            <option value=""{% if not v.oab_uf %} selected{% endif %}>—</option>
+            {% for uf in ufs %}
+            <option value="{{ uf }}"{% if uf == v.oab_uf %} selected{% endif %}>{{ uf }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+    </section>
+
+    <section class="cartao" aria-labelledby="titulo-pje">
+      <h2 id="titulo-pje">Download dos autos pelo PJe <span class="selo selo-neutro">opcional</span></h2>
+      <p>Com a senha do PJe, a Controladoria também baixa os autos dos seus processos no TJMT e no TJMG. Sem ela, tudo o mais funciona: as publicações vêm do Diário de todo o Brasil. Pode deixar para depois.</p>
+      <p class="campo-ajuda">Use a senha do login do PJe <strong>sem certificado</strong> (CPF e senha). O código do aplicativo de autenticação não é pedido aqui. Não tem senha? No próprio PJe, use “Esqueci minha senha” (o e-mail precisa estar escrito igual ao do cadastro, inclusive maiúsculas).</p>
+      <p class="cofre-nota">🔒 As senhas ficam no cofre deste computador (Gerenciador de Credenciais no Windows, Chaves no Mac) e não saem dele. Elas não aparecem na tela nem vão para nenhum arquivo.</p>
+
+      <label class="campo" for="campo-cpf">CPF de acesso ao PJe</label>
+      <input type="text" name="cpf" id="campo-cpf" class="busca" inputmode="numeric"
+             autocomplete="username" placeholder="somente números" value="{{ v.cpf }}">
+      <p class="campo-ajuda">O mesmo CPF em todos os tribunais; a senha é a de cada um. Só é preciso se você marcar um tribunal abaixo.</p>
+
+      {% for t in tribunais %}
+      {% set marcado = t.sigla in v.tribunais %}
+      {% set tem_senha = guardado.tem_senha.get(t.sigla) %}
+      {% set tem_senha_2grau = guardado.tem_senha_2grau.get(t.sigla) %}
+      <fieldset class="tribunal-bloco" data-sigla="{{ t.sigla }}">
+        <label class="campo campo-marcar">
+          <input type="checkbox" name="tribunais" value="{{ t.sigla }}" class="marcar-tribunal"{% if marcado %} checked{% endif %}>
+          Tenho processos no {{ t.sigla }} <span class="campo-ajuda">· {{ t.nome }}</span>
+        </label>
+        <div class="tribunal-senhas">
+          <label class="campo" for="campo-senha-{{ t.sigla }}">Senha do PJe do {{ t.sigla }}{% if tem_senha %} <span class="selo selo-ok">guardada ✓</span>{% endif %}</label>
+          <div class="campo-senha">
+            <input type="password" name="senha_{{ t.sigla }}" id="campo-senha-{{ t.sigla }}" class="busca" autocomplete="off"
+                   placeholder="{{ 'deixe em branco para manter a guardada' if tem_senha else '' }}">
+            <button type="button" class="olho" aria-label="Mostrar senha">mostrar</button>
+          </div>
+          {% if t.tem_instancia('2grau') %}
+          <label class="campo" for="campo-senha-2grau-{{ t.sigla }}">Senha do PJe do 2º grau do {{ t.sigla }}{% if tem_senha_2grau %} <span class="selo selo-ok">guardada ✓</span>{% endif %}</label>
+          <div class="campo-senha">
+            <input type="password" name="senha_2grau_{{ t.sigla }}" id="campo-senha-2grau-{{ t.sigla }}" class="busca" autocomplete="off"
+                   placeholder="{{ 'deixe em branco para manter a guardada' if tem_senha_2grau else 'se for a mesma do 1º grau, deixe em branco' }}">
+            <button type="button" class="olho" aria-label="Mostrar senha">mostrar</button>
+          </div>
+          <p class="campo-ajuda">Neste tribunal o 2º grau tem login próprio no PJe.</p>
+          {% endif %}
+        </div>
+      </fieldset>
+      {% endfor %}
+      <p class="campo-ajuda">Desmarcar um tribunal apaga as senhas dele deste computador. O primeiro marcado é o principal (dá o fuso do relógio das varreduras). Outros tribunais ainda não baixam autos, mas as publicações deles chegam pelo Diário.</p>
+    </section>
+
+    <div class="config-linha">
+      <button type="submit" class="btn" data-ocupado="Guardando…">Guardar</button>
+      <span class="campo-ajuda">Se você marcou um tribunal, o login é testado no PJe antes de guardar (pode levar até meio minuto).</span>
+    </div>
+  </form>
+</div>
+<script>
+  // Sem script, todos os campos ficam à vista; com ele, cada tribunal só mostra as
+  // senhas quando marcado.
+  (function () {
+    document.querySelectorAll('.tribunal-bloco').forEach(function (bloco) {
+      var marcar = bloco.querySelector('.marcar-tribunal');
+      var senhas = bloco.querySelector('.tribunal-senhas');
+      function ajustar() { senhas.hidden = !marcar.checked; }
+      marcar.addEventListener('change', ajustar);
+      ajustar();
+    });
+  })();
+</script>
+{% endblock %}

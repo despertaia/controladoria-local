@@ -1,0 +1,161 @@
+{% extends "base.html" %}
+{% block titulo %}Busca{% if q %} · {{ q }}{% endif %} · Controladoria{% endblock %}
+{% block conteudo %}
+
+<div class="cabecalho-pagina">
+  <div>
+    <p class="sobretitulo">Busca</p>
+    <h1>Busca{% if q %}: {{ q }}{% endif %}</h1>
+    <p class="subtitulo">Por nome da parte ou do cliente, ou pelos 20 dígitos do processo.</p>
+  </div>
+</div>
+
+<form method="get" action="{{ url_for('buscar') }}" class="filtros filtros-busca form-carregando">
+  <input type="search" name="q" value="{{ q }}" class="busca" autocomplete="off"
+         placeholder="Nome ou nº do processo…" aria-label="Nome ou número do processo">
+  <select name="tribunal" class="busca seletor" aria-label="Tribunal das publicações">
+    <option value="" {{ 'selected' if tribunal == '' }}>Todos os tribunais</option>
+    {% for t in tribunais %}<option value="{{ t }}" {{ 'selected' if t == tribunal }}>{{ t }}</option>{% endfor %}
+  </select>
+  <select name="meses" class="busca seletor" aria-label="Período das publicações">
+    {% for m in periodos %}<option value="{{ m }}" {{ 'selected' if m == meses }}>Últimos {{ m }} meses</option>{% endfor %}
+  </select>
+  <button type="submit" class="btn" data-ocupado="Buscando…">Buscar</button>
+</form>
+
+{% if estado == 'vazio' %}
+<div class="cartao"><p class="vazio">Digite um nome (de cliente, parte contrária ou qualquer parte) ou os 20 dígitos de um processo.
+  Procuramos na sua carteira e nas publicações do Diário de Justiça.</p></div>
+
+{% elif estado == 'numero_novo' %}
+<div class="cartao resultado">
+  <div class="resultado-topo"><span class="numero">{{ numero_formatado }}</span></div>
+  <p class="resultado-vara">Este processo ainda não está no painel.</p>
+  <div class="resultado-acoes">
+    {% if e_tjmt %}
+    <form method="post" action="{{ url_for('consultar') }}" class="form-carregando">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="numero" value="{{ numero }}">
+      <button type="submit" class="btn" data-ocupado="Consultando…">Consultar no PJe</button>
+    </form>
+    {% else %}
+    <p class="resultado-data">Este processo não é do {{ tribunais_siglas }}; os movimentos chegam pelo DJEN.</p>
+    <form method="post" action="{{ url_for('carteira_adicionar') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="numero" value="{{ numero }}">
+      <input type="hidden" name="origem" value="busca">
+      <input type="hidden" name="voltar" value="{{ url_for('carteira_tela') }}">
+      <button type="submit" class="btn">Adicionar e acompanhar</button>
+    </form>
+    {% endif %}
+  </div>
+</div>
+
+{% elif estado == 'curto' %}
+<div class="aviso aviso-erro">Digite pelo menos 4 letras do nome ou os 20 dígitos do processo.</div>
+
+{% else %}
+
+<section class="secao-busca">
+  <h2>Na sua carteira <span class="contador">{{ carteira|length }}</span></h2>
+  {% if carteira %}
+  <div class="tabela-wrap tabela-wrap-carteira">
+  <table class="tabela tabela-carteira">
+    <thead>
+      <tr>
+        <th>Processo</th>
+        <th>Cliente</th>
+        <th>Parte contrária</th>
+        <th>Último movimento</th>
+        <th class="num">Parado</th>
+        <th>Situação</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in carteira %}
+      <tr data-href="{{ url_for('processo', numero=p.numero) }}">
+        <td>
+          <a class="numero" href="{{ url_for('processo', numero=p.numero) }}">{{ p.numero_formatado }}</a>
+          <span class="tag">{{ p.tribunal }}{% if p.orgao %} · {{ p.orgao }}{% endif %}</span>
+        </td>
+        <td class="partes" data-rotulo="Cliente">{{ p.cliente or '—' }}</td>
+        <td class="partes" data-rotulo="Parte contrária">{{ p.parte_contraria or '—' }}</td>
+        <td class="ultimo" data-rotulo="Último movimento">
+          {% if p.referencia_br %}<span class="data">{{ p.referencia_br }}</span>{% endif %}
+          <span class="texto">{{ p.ultimo_texto or '—' }}</span>
+        </td>
+        <td class="num" data-rotulo="Parado">
+          {% if p.dias_parado is not none %}<span class="{{ 'tom-aviso' if p.dias_parado > 90 }}">{{ p.dias_parado }} d</span>{% else %}—{% endif %}
+        </td>
+        <td data-rotulo="Situação"><span class="selo selo-{{ p.tom }}">{{ p.situacao }}</span></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% else %}
+  <div class="cartao"><p class="vazio">Nenhum processo seu com esse nome.</p></div>
+  {% endif %}
+</section>
+
+<section class="secao-busca">
+  <h2>Em publicações do DJEN <span class="contador">{{ djen|length }}</span></h2>
+  {% if djen_erro %}
+  <div class="aviso aviso-erro">O DJEN não respondeu agora. Tente de novo em instantes.</div>
+  {% else %}
+    {% if truncado %}
+    <div class="aviso">Mostrando os processos das {{ limite }} publicações mais recentes. Refine pelo período ou tribunal.</div>
+    {% endif %}
+    {% for g in djen %}
+    <article class="cartao resultado">
+      <div class="resultado-topo">
+        <span class="numero">{{ g.numero_formatado }}</span>
+        <span class="tag">{{ g.tribunal }}</span>
+        {% if g.na_carteira %}<span class="selo selo-ok selo-na-carteira">Na sua carteira</span>{% endif %}
+      </div>
+      {% if g.orgao or g.classe %}<p class="resultado-vara">{{ g.orgao }}{% if g.orgao and g.classe %} · {% endif %}{{ g.classe }}</p>{% endif %}
+      {% if g.partes %}
+      <ul class="resultado-partes">
+        {% for parte in g.partes %}
+        <li>{{ parte.nome }}{% if parte.polo %} <span class="polo">{{ parte.polo }}</span>{% endif %}</li>
+        {% endfor %}
+      </ul>
+      {% endif %}
+      <p class="resultado-data">{% if g.ultima_publicacao %}Última publicação em {{ g.ultima_publicacao[8:10] }}/{{ g.ultima_publicacao[5:7] }}/{{ g.ultima_publicacao[0:4] }}
+        · {% endif %}{{ g.n_publicacoes }} publicaç{{ 'ão' if g.n_publicacoes == 1 else 'ões' }}</p>
+      <div class="resultado-acoes">
+        {% if g.e_tjmt %}
+        <a class="btn btn-secundario" href="{{ url_for('buscar', q=g.numero) }}">Abrir no PJe</a>
+        {% elif g.link %}
+        <a class="btn btn-secundario" href="{{ g.link }}" target="_blank" rel="noopener noreferrer">ver publicação</a>
+        {% endif %}
+        {% if not g.na_carteira %}
+        <form method="post" action="{{ url_for('carteira_adicionar') }}">
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="numero" value="{{ g.numero }}">
+          <input type="hidden" name="origem" value="busca">
+          <input type="hidden" name="voltar" value="{{ request.full_path.rstrip('?') }}">
+          <button type="submit" class="btn">Adicionar e acompanhar</button>
+        </form>
+        {% endif %}
+      </div>
+    </article>
+    {% else %}
+    <div class="cartao"><p class="vazio">Nenhum processo encontrado nas publicações desse período e tribunal.</p></div>
+    {% endfor %}
+  {% endif %}
+</section>
+
+{% endif %}
+
+<script>
+  // Linha inteira clicável na tabela da carteira.
+  document.querySelectorAll('tr[data-href]').forEach(function (tr) {
+    tr.addEventListener('click', function (e) {
+      if (e.target.closest('a')) return;
+      window.location = tr.dataset.href;
+    });
+  });
+</script>
+
+{% endblock %}

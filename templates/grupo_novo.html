@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block titulo %}Novo grupo · Controladoria{% endblock %}
+{% block conteudo %}
+
+<a href="{{ url_for('grupos_lista') }}" class="voltar">← Grupos</a>
+
+<div class="cartao" style="max-width:680px;">
+  <h1 style="font-size:20px;">Novo grupo</h1>
+  <p class="subtitulo" style="margin-bottom:18px;">
+    Dê um nome (ex.: o nome do cliente) e cole a lista de processos. Depois você
+    baixa tudo de uma vez e consulta o histórico quando precisar.
+  </p>
+
+  {% if classif and classif.problemas %}
+  <div class="aviso aviso-erro" style="margin-bottom:18px;">
+    <strong>Revise antes de criar:</strong> {{ classif.n_validos }} processo(s) válido(s) do {{ tribunais_siglas }}
+    e {{ classif.problemas|length }} com problema (não serão baixados):
+    <ul style="margin:8px 0 0;">
+      {% for p in classif.problemas %}
+        <li><strong>{{ p.formatado }}</strong> — {{ p.motivo }}</li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <form method="post" action="{{ url_for('grupo_novo') }}">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <label style="display:block; font-size:13px; color:var(--cinza); margin-bottom:4px;">Nome do grupo</label>
+    <input type="text" name="nome" class="busca" required {% if not classif %}autofocus{% endif %}
+           value="{{ nome or '' }}"
+           placeholder="Ex.: Cliente Fulano — carteira cível"
+           style="width:100%; margin:0 0 14px;">
+
+    <label style="display:block; font-size:13px; color:var(--cinza); margin-bottom:4px;">Descrição (opcional)</label>
+    <input type="text" name="descricao" class="busca" value="{{ descricao or '' }}"
+           placeholder="Ex.: análise de prazos solicitada em jun/2026"
+           style="width:100%; margin:0 0 14px;">
+
+    <label style="display:block; font-size:13px; color:var(--cinza); margin-bottom:4px;">Processos (um por linha)</label>
+    <textarea name="numeros" class="busca" rows="9" required
+              style="width:100%; font-family:inherit; resize:vertical; margin:0 0 16px;"
+              placeholder="Cole os números CNJ, um por linha (com ou sem máscara).">{{ texto or '' }}</textarea>
+
+    {% if classif and classif.problemas %}
+      <input type="hidden" name="revisado" value="1">
+      <label style="display:flex; gap:8px; align-items:flex-start; margin:0 0 16px; font-size:14px;">
+        <input type="checkbox" name="incluir_todos" value="1" style="margin-top:3px;">
+        <span>Incluir mesmo assim os {{ classif.problemas|length }} com problema
+              (vão constar no grupo, mas falharão no download).</span>
+      </label>
+      <button type="submit" class="btn">Criar grupo (só com os {{ classif.n_validos }} válidos, salvo se marcar acima)</button>
+    {% else %}
+      <button type="submit" class="btn">Criar grupo</button>
+    {% endif %}
+  </form>
+</div>
+
+{% endblock %}
