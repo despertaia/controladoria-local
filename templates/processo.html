@@ -1,0 +1,253 @@
+{% extends "base.html" %}
+{% block titulo %}{{ numero_formatado }} · Controladoria{% endblock %}
+{% block conteudo %}
+{% import "_publicacao.html" as pub with context %}
+
+<a href="{{ url_for('carteira_tela') }}" class="voltar">← Carteira</a>
+
+{% if dados is none and detalhe is none %}
+  <div class="cartao">
+    <h1>{{ numero_formatado }}</h1>
+    <p class="subtitulo">Este processo ainda não foi sincronizado.</p>
+    {% if e_tjmt %}
+    <form method="post" action="{{ url_for('atualizar', numero=numero) }}"
+          onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Buscando…';">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button type="submit" class="btn">Fazer levantamento inicial</button>
+    </form>
+    {% else %}
+    <p class="subtitulo">Neste tribunal os movimentos chegam pelas publicações do DJEN.</p>
+    {% endif %}
+  </div>
+  {{ pub.fora_da_carteira(numero) }}
+{% else %}
+
+{% set orgao = (detalhe.orgao_julgador if detalhe else '') or (dados.orgao_julgador if dados else '') %}
+{% set valor = (detalhe.valor_causa if detalhe else '') or (dados.valor_causa if dados else '') %}
+{% if modo_apresentacao %}
+{# No modo, só as partes do banco (passam pela máscara); nunca as do cache. #}
+{% set partes = detalhe.partes if detalhe and detalhe.partes else [] %}
+{% else %}
+{% set partes = (detalhe.partes if detalhe and detalhe.partes else (dados.partes if dados else [])) %}
+{% endif %}
+
+<div class="cartao cabecalho-processo">
+  <div class="cabecalho-processo-info">
+    <p class="sobretitulo">{{ detalhe.tribunal if detalhe else tribunal_sigla }}{% if detalhe and detalhe.instancia_rotulo %} · {{ detalhe.instancia_rotulo }}{% endif %}</p>
+    <h1 class="numero-processo">{{ numero_formatado }}</h1>
+    {% if detalhe %}<span class="selo selo-{{ detalhe.tom }}">{{ detalhe.situacao }}</span>{% endif %}
+    {% if detalhe and (detalhe.cliente or detalhe.parte_contraria) %}
+    <dl class="lados">
+      <div><dt>Cliente{% if detalhe.polo_cliente %} · {{ detalhe.polo_cliente }}{% endif %}</dt><dd>{{ detalhe.cliente or '—' }}</dd></div>
+      <div><dt>Parte contrária</dt><dd>{{ detalhe.parte_contraria or '—' }}</dd></div>
+    </dl>
+    {% elif detalhe %}
+    {{ pub.partes_publicadas(detalhe.partes_publicadas) }}
+    {% endif %}
+    <div class="meta">
+      {% if orgao %}<span>{{ orgao }}</span>{% endif %}
+      {% if valor %}<span>Valor da causa {{ valor }}</span>{% endif %}
+      {% if detalhe and detalhe.erro %}<span class="tom-aviso">{{ detalhe.erro }}</span>{% endif %}
+    </div>
+    {% if modo_apresentacao and not partes %}
+    <p class="texto-oculto">Partes e advogados: {{ texto_oculto }}</p>
+    {% elif partes %}
+    <details class="partes-detalhe">
+      <summary>Partes e advogados</summary>
+      {% for polo in partes %}
+        <div style="margin-top:8px;">
+          <strong>{{ polo.polo }}:</strong>
+          {% if polo.integrantes %}
+            {% for p in polo.integrantes %}
+              <div style="margin-left:8px;">
+                {{ p.nome }}
+                {% if p.intimacao_pendente %}<span class="selo selo-alerta">intimação pendente</span>{% endif %}
+                {% if p.advogados %}
+                  <div style="margin-left:12px; color:var(--cinza); font-size:13px;">
+                    adv.:
+                    {%- for a in p.advogados %} {{ a.nome }}{% if a.oab %}{% if modo_apresentacao %} (OAB •••••){% else %} ({{ a.oab }}){% endif %}{% endif %}{% if not loop.last %};{% endif %}{% endfor %}
+                  </div>
+                {% endif %}
+              </div>
+            {% endfor %}
+          {% else %}
+            {{ polo.nomes|join(', ') }}
+          {% endif %}
+        </div>
+      {% endfor %}
+    </details>
+    {% endif %}
+  </div>
+  <div class="cabecalho-processo-acoes">
+    {% if e_tjmt %}
+    <form method="post" action="{{ url_for('atualizar', numero=numero) }}"
+          onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Buscando…';">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button type="submit" class="btn">Atualizar do PJe</button>
+    </form>
+    {% if not modo_apresentacao %}
+    <div>
+      <button type="button" id="btn-baixar-tudo" class="btn btn-secundario"
+              title="Busca as peças no {{ tribunal_sigla }} e guarda no servidor">⬇ 1) Baixar do {{ tribunal_sigla }}</button>
+      <a id="link-zip" href="{{ url_for('baixar_zip', numero=numero) }}" class="btn btn-secundario"
+         title="Leva as peças já baixadas para o seu computador">💾 2) Baixar .zip</a>
+    </div>
+    {% endif %}
+    {% else %}
+    <p class="subtitulo">Neste tribunal os movimentos chegam pelas publicações do DJEN.</p>
+    {% endif %}
+    {% if dados and dados.atualizado_em %}
+    <small class="atualizado-em">peças atualizadas em {{ dados.atualizado_em.replace('T',' ')[:16] }}</small>
+    {% endif %}
+  </div>
+</div>
+
+{% if detalhe %}{{ pub.decisao(detalhe.monitoramento, numero, url_for('processo', numero=numero)) }}{% else %}{{ pub.fora_da_carteira(numero) }}{% endif %}
+
+{% if detalhe and detalhe.cartoes_lex %}
+<div class="cartao">
+  <h2>Peças do Lex</h2>
+  <ul class="demanda-historico">
+    {% for c in detalhe.cartoes_lex %}
+    <li><a href="{{ url_for('demanda_tela', demanda_id=c.id) }}">{{ c.squad_rotulo or 'Peça do Lex' }}</a> · {{ c.coluna_titulo }}{% if c.data_br %} · publicação de {{ c.data_br }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+{% if e_tjmt and not modo_apresentacao %}
+<pre id="saida-download" style="display:none; background:#0f172a; color:#e2e8f0;
+     padding:16px; border-radius:var(--raio); max-height:360px; overflow:auto;
+     white-space:pre-wrap; word-break:break-word; font-size:13px; line-height:1.55;
+     margin:0 0 20px;"></pre>
+
+<script>
+(function () {
+  const btn = document.getElementById('btn-baixar-tudo');
+  const saida = document.getElementById('saida-download');
+  if (!btn) return;
+  const linkZip = document.getElementById('link-zip');
+  btn.addEventListener('click', async function () {
+    btn.disabled = true;
+    btn.textContent = 'Baixando do {{ tribunal_sigla }}…';
+    saida.style.display = 'block';
+    saida.textContent = 'Iniciando… (busca {{ "na 1ª e na 2ª instância" if tribunal_tem_2grau else "na 1ª instância" }})\n';
+    let ok = false;
+    try {
+      const resp = await fetch("{{ url_for('baixar_processo_stream', numero=numero) }}",
+                               { method: 'POST',
+                                 headers: { 'X-CSRF': document.querySelector('meta[name="csrf"]').content } });
+      saida.textContent = '';
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        saida.textContent += decoder.decode(value, { stream: true });
+        saida.scrollTop = saida.scrollHeight;
+      }
+      ok = true;
+    } catch (err) {
+      saida.textContent += '\n[interrompido] ' + err + '\n';
+    } finally {
+      btn.disabled = false;
+      btn.textContent = '⬇ 1) Baixar do {{ tribunal_sigla }}';
+    }
+    if (ok) {
+      saida.textContent += '\n👉 Pronto! Agora clique em "💾 2) Baixar .zip" '
+                         + 'para levar tudo (peças + dossiê) para o seu computador.\n';
+      saida.scrollTop = saida.scrollHeight;
+      // destaca o botão do zip
+      if (linkZip) { linkZip.style.boxShadow = '0 0 0 3px var(--latao)'; }
+    }
+  });
+})();
+</script>
+{% endif %}
+
+{% if dados %}
+<section class="cartao resumo-ia">
+  <div class="resumo-topo">
+    <h2>✨ Resumo (IA)</h2>
+    <form method="post" action="{{ url_for('resumir', numero=numero) }}"
+          onsubmit="this.querySelector('button').disabled=true; this.querySelector('button').textContent='Gerando…';">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-secundario">
+        {% if dados.resumo_ia %}↻ Atualizar resumo{% else %}✨ Gerar resumo{% endif %}
+      </button>
+    </form>
+  </div>
+  {% if dados.resumo_ia and modo_apresentacao %}
+    <p class="resumo-vazio texto-oculto">{{ texto_oculto }}</p>
+  {% elif dados.resumo_ia %}
+    <div class="resumo-texto">{{ dados.resumo_ia | md | safe }}</div>
+    {% if dados.resumo_em %}
+      <small class="resumo-em">gerado em {{ dados.resumo_em.replace('T',' ')[:16] }}</small>
+    {% endif %}
+  {% else %}
+    <p class="resumo-vazio">Nenhum resumo ainda. Clique em "Gerar resumo" para a IA analisar os andamentos.</p>
+  {% endif %}
+</section>
+{% endif %}
+
+<div class="colunas{{ ' colunas-uma' if not dados }}">
+  <section class="cartao coluna">
+    {% if detalhe %}
+    <h2>Linha do tempo <span class="contador">{{ detalhe.linha_do_tempo|length }}</span></h2>
+    <ol class="timeline">
+      {% for item in detalhe.linha_do_tempo %}
+      <li class="timeline-{{ item.tipo }}">
+        <span class="ponto"></span>
+        <span class="data">{{ item.data_br }}{% if item.hora %} · {{ item.hora }}{% endif %} · {% if item.tipo == 'aviso' %}<span class="tom-alerta">Intimação</span>{% elif item.tipo == 'publicacao' %}Publicação no DJEN{% else %}Andamento{% endif %}</span>
+        <span class="texto{{ ' texto-oculto' if modo_apresentacao }}">{{ texto_oculto if modo_apresentacao else item.texto }}</span>
+        {% if item.tipo == 'publicacao' %}
+        <span class="publicacao-acoes">{{ pub.integra(item.integra) }}{{ pub.link_tribunal(item.link) }}</span>
+        {% endif %}
+      </li>
+      {% else %}
+      <li><span class="vazio">Sem movimentos registrados.</span></li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <h2>Andamentos <span class="contador">{{ dados.andamentos|length }}</span></h2>
+    <ol class="timeline">
+      {% for a in dados.andamentos %}
+      <li>
+        <span class="ponto"></span>
+        <span class="data">{{ a.data }}</span>
+        <span class="texto{{ ' texto-oculto' if modo_apresentacao }}">{{ texto_oculto if modo_apresentacao else a.texto }}</span>
+      </li>
+      {% endfor %}
+    </ol>
+    {% endif %}
+  </section>
+
+  {% if dados %}
+  <section class="cartao coluna">
+    <h2>Documentos <span class="contador">{{ dados.documentos|length }}</span></h2>
+    <ul class="docs">
+      {% for d in dados.documentos %}
+      <li>
+        <div class="doc-info">
+          {% if modo_apresentacao %}
+          <span class="doc-nome">Documento</span>
+          {% else %}
+          <a href="{{ url_for('documento', numero=numero, id_doc=d.id) }}" target="_blank" class="doc-nome">
+            {{ d.descricao }}
+          </a>
+          {% endif %}
+          <span class="doc-meta">{{ d.data }} · {{ d.mimetype or 'arquivo' }}</span>
+        </div>
+        {% if not modo_apresentacao %}
+        <a class="btn-baixar" title="Baixar"
+           href="{{ url_for('documento', numero=numero, id_doc=d.id) }}?download=1">⤓</a>
+        {% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+</div>
+
+{% endif %}
+{% endblock %}

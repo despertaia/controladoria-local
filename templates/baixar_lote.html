@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% block titulo %}Baixar processos em lote{% endblock %}
+{% block conteudo %}
+
+<div class="cabecalho-pagina">
+  <div>
+    <h1>Baixar em lote</h1>
+    <p class="subtitulo">Cole uma lista de processos e baixe a íntegra (todas as peças) de cada um.</p>
+  </div>
+  <a href="{{ url_for('lista') }}" class="btn btn-secundario">← Voltar</a>
+</div>
+
+<form id="form-lote">
+  <textarea id="numeros" name="numeros" class="busca" rows="8"
+            style="width:100%; font-family:inherit; resize:vertical;"
+            placeholder="Um processo por linha (com ou sem máscara CNJ). Ex.:&#10;1009999-24.2018.8.11.0041&#10;1002345-00.2020.8.11.0002"></textarea>
+  <p class="subtitulo" style="margin:8px 0 12px;">
+    {% if tribunal_tem_2grau %}
+    Cada processo é buscado na <strong>1ª e na 2ª instância</strong> e salvo em
+    <code>peticoes/&lt;numero&gt;/1grau/</code> e <code>/2grau/</code>.
+    {% else %}
+    Cada processo é buscado na <strong>1ª instância</strong> e salvo em
+    <code>peticoes/&lt;numero&gt;/1grau/</code>.
+    {% endif %}
+    Se não constar em alguma instância, o painel apenas avisa e segue.
+    O download respeita o intervalo configurado entre requisições, então listas grandes demoram.
+  </p>
+  <button type="submit" id="btn-baixar" class="btn">⬇ Baixar tudo</button>
+</form>
+
+<pre id="saida" style="display:none; margin-top:20px; background:#0f172a; color:#e2e8f0;
+     padding:16px; border-radius:var(--raio); max-height:480px; overflow:auto;
+     white-space:pre-wrap; word-break:break-word; font-size:13px; line-height:1.55;"></pre>
+
+<script>
+const form = document.getElementById('form-lote');
+const btn = document.getElementById('btn-baixar');
+const saida = document.getElementById('saida');
+
+form.addEventListener('submit', async function (e) {
+  e.preventDefault();
+  const numeros = document.getElementById('numeros').value.trim();
+  if (!numeros) return;
+
+  btn.disabled = true;
+  btn.textContent = 'Baixando…';
+  saida.style.display = 'block';
+  saida.textContent = 'Iniciando…\n';
+
+  try {
+    const resp = await fetch("{{ url_for('baixar_lote_stream') }}", {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded',
+                 'X-CSRF': document.querySelector('meta[name="csrf"]').content },
+      body: 'numeros=' + encodeURIComponent(numeros),
+    });
+    saida.textContent = '';
+    const reader = resp.body.getReader();
+    const decoder = new TextDecoder();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      saida.textContent += decoder.decode(value, { stream: true });
+      saida.scrollTop = saida.scrollHeight;
+    }
+  } catch (err) {
+    saida.textContent += '\n[interrompido] ' + err + '\n';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '⬇ Baixar tudo';
+  }
+});
+</script>
+
+{% endblock %}

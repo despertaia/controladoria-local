@@ -1,0 +1,84 @@
+{# Peças da página do cartão e da página do processo: íntegra da publicação, partes que
+   o DJEN publicou, a decisão "Este processo é seu?" e o "Adicionar e acompanhar" de
+   um número fora da carteira. Importe com `with context`. #}
+
+{% macro integra(paragrafos) %}
+<details class="integra">
+  <summary>Ler a íntegra</summary>
+  {% if modo_apresentacao %}
+  <p class="integra-texto texto-oculto">{{ texto_oculto }}</p>
+  {% elif paragrafos %}
+  <div class="integra-texto">{% for par in paragrafos %}<p>{{ par }}</p>{% endfor %}</div>
+  {% else %}
+  <p class="vazio">A publicação veio sem texto.</p>
+  {% endif %}
+</details>
+{% endmacro %}
+
+{% macro link_tribunal(link) %}
+{% if link and not modo_apresentacao %}<a href="{{ link }}" target="_blank" rel="noopener noreferrer" class="link-discreto">abrir no site do tribunal</a>{% endif %}
+{% endmacro %}
+
+{% macro partes_publicadas(grupos) %}
+{% if grupos %}
+<p class="partes-publicadas" title="Destinatários das publicações no DJEN; não diz quem é o seu cliente.">
+  <span class="partes-publicadas-rotulo">Partes na publicação:</span>
+  {% for g in grupos %}{% if g.separador %} <span class="cartao-x">{{ g.separador }}</span> {% endif %}{{ g.nomes|join(', ') }} <span class="partes-publicadas-polo">({{ g.rotulo }})</span>{% endfor %}
+</p>
+{% endif %}
+{% endmacro %}
+
+{% macro _form(rota, numero, voltar, rotulo, classe) %}
+<form method="post" action="{{ url_for(rota) }}">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="numero" value="{{ numero }}">
+  <input type="hidden" name="voltar" value="{{ voltar }}">
+  <button type="submit" class="{{ classe }}">{{ rotulo }}</button>
+</form>
+{% endmacro %}
+
+{% macro decisao(m, numero, voltar) %}
+{% if m.estado == 'a_conferir' %}
+<div class="cartao monitorar" role="group" aria-labelledby="monitorar-titulo">
+  <h2 id="monitorar-titulo">Este processo é seu?</h2>
+  <p class="subtitulo">A sua OAB não aparece nos dados do tribunal. Leia a publicação e decida se ele entra no monitoramento.</p>
+  <div class="cartao-acoes">
+    {{ _form('carteira_confirmar', numero, voltar, 'É meu, acompanhar', 'btn') }}
+    {{ _form('carteira_descartar', numero, voltar, 'Não é meu', 'btn btn-secundario') }}
+  </div>
+</div>
+{% elif m.estado == 'descartado' %}
+<div class="cartao monitorar monitorar-descartado" role="group" aria-label="Processo marcado como não seu">
+  <p>Você marcou este processo como não seu{% if m.descartado_br %} em {{ m.descartado_br }}{% endif %}. Ele fica em “Descartados” e o cartão saiu do quadro.</p>
+  <div class="cartao-acoes">
+    {{ _form('carteira_restaurar', numero, voltar, 'Desfazer', 'btn btn-pequeno btn-secundario') }}
+    {{ _form('carteira_confirmar', numero, voltar, 'É meu, acompanhar', 'btn btn-pequeno') }}
+  </div>
+</div>
+{% elif m.estado == 'confirmado' %}
+<div class="monitorar-discreto">
+  <span>Na sua carteira · confirmado por você{% if m.confirmado_br %} em {{ m.confirmado_br }}{% endif %}</span>
+  <span class="meta-sep" aria-hidden="true">·</span>
+  {{ _form('carteira_descartar', numero, voltar, 'Não é meu', 'link-botao') }}
+</div>
+{% endif %}
+{% endmacro %}
+
+{% macro fora_da_carteira(numero) %}
+<div class="cartao monitorar" role="group" aria-labelledby="fora-titulo">
+  <h2 id="fora-titulo">Este processo não está na sua carteira</h2>
+  {% if modo_apresentacao %}
+  <p class="subtitulo">Para adicioná-lo, desligue o modo apresentação.</p>
+  {% else %}
+  <p class="subtitulo">Adicione-o para a Controladoria acompanhar as publicações dele no Diário{% if e_tjmt %} e os andamentos no PJe{% endif %}.</p>
+  <div class="cartao-acoes">
+    <form method="post" action="{{ url_for('carteira_adicionar') }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="numero" value="{{ numero }}">
+      <input type="hidden" name="origem" value="manual">
+      <button type="submit" class="btn">Adicionar e acompanhar</button>
+    </form>
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}

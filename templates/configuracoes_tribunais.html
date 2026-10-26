@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block titulo %}Tribunais e senhas · Controladoria{% endblock %}
+{% block conteudo %}
+<div class="config-lex">
+  <a href="{{ url_for('lista') }}" class="voltar">← Voltar ao Cockpit</a>
+  <h1>Configurações</h1>
+  {% include "_config_subnav.html" %}
+
+  {% if not cofre_ok %}
+  <p class="aviso aviso-erro" role="alert">O cofre de senhas não está disponível neste servidor. Nada pode ser guardado agora.</p>
+  {% elif cofre_nao_abre %}
+  <p class="aviso aviso-erro" role="alert">Algumas senhas guardadas não abrem com a chave atual do cofre. Digite-as de novo.</p>
+  {% endif %}
+
+  <section class="cartao" aria-labelledby="titulo-cpf">
+    <h2 id="titulo-cpf">Seu CPF de login no PJe</h2>
+    <p>É o mesmo CPF em todos os tribunais; a senha é a de cada um.</p>
+    {% macro form_cpf() %}
+    <form method="post" action="{{ url_for('configuracoes_tribunais_cpf') }}" class="config-linha" id="form-cpf">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <label class="campo" for="campo-cpf-tribunais">CPF</label>
+      <input type="text" name="cpf" id="campo-cpf-tribunais" class="busca" inputmode="numeric"
+             autocomplete="off" placeholder="somente números" required>
+      <button type="submit" class="btn"{% if not cofre_ok %} disabled{% endif %}>{{ 'Guardar novo CPF' if tem_cpf else 'Guardar CPF' }}</button>
+    </form>
+    {% endmacro %}
+    {% if tem_cpf %}
+    <div class="config-linha" id="cpf-guardado">
+      <span class="selo selo-ok">guardado (final {{ cpf_final }})</span>
+    </div>
+    <details class="trocar-cpf">
+      <summary class="btn btn-secundario">Trocar</summary>
+      {{ form_cpf() }}
+    </details>
+    {% else %}
+    {{ form_cpf() }}
+    {% endif %}
+  </section>
+
+  <section class="cartao" aria-labelledby="titulo-instancias">
+    <h2 id="titulo-instancias">Senha de cada tribunal</h2>
+    <p>A senha só é guardada depois que o PJe aceita o login. Ela nunca volta para a tela.</p>
+    {% for t in linhas %}
+    <div class="linha-tribunal">
+      <div class="tribunal-identidade">
+        <strong>{{ t.sigla }}</strong> · {{ t.rotulo }}
+        <div><span class="selo selo-{{ t.selo_tom }}">{{ t.selo_texto }}</span></div>
+      </div>
+      <form method="post" action="{{ url_for('configuracoes_tribunais_salvar') }}" class="form-carregando tribunal-senha-form">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="sigla" value="{{ t.sigla }}">
+        <input type="hidden" name="instancia" value="{{ t.instancia }}">
+        <label class="campo" for="senha-{{ t.sigla }}-{{ t.instancia }}">Senha do PJe do {{ t.sigla }} ({{ t.rotulo }})</label>
+        <input type="password" name="senha" id="senha-{{ t.sigla }}-{{ t.instancia }}" class="busca"
+               autocomplete="new-password" value="">
+        <label class="campo-marcar"><input type="checkbox" name="mesmo_assim" value="1"> Guardar mesmo assim (sem testar)</label>
+        <button type="submit" class="btn" data-ocupado="Testando o login…"{% if not cofre_ok %} disabled{% endif %}>{{ 'Trocar senha' if t.cadastrada else 'Guardar' }}</button>
+      </form>
+      {% if t.cadastrada %}
+      <div class="tribunal-acoes">
+        {% if t.selo != 'redigitar' %}
+        <form method="post" action="{{ url_for('configuracoes_tribunais_testar') }}" class="form-carregando">
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="sigla" value="{{ t.sigla }}">
+          <input type="hidden" name="instancia" value="{{ t.instancia }}">
+          <button type="submit" class="btn btn-secundario" data-ocupado="Testando…">Testar agora</button>
+        </form>
+        {% endif %}
+        <form method="post" action="{{ url_for('configuracoes_tribunais_remover') }}" onsubmit="return confirm('Remover a senha do {{ t.sigla }} ({{ t.rotulo }}) deste painel?');">
+          <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+          <input type="hidden" name="sigla" value="{{ t.sigla }}">
+          <input type="hidden" name="instancia" value="{{ t.instancia }}">
+          <button type="submit" class="btn btn-secundario">Remover</button>
+        </form>
+      </div>
+      {% endif %}
+      {% if t.detalhe %}<small class="tribunal-detalhe">{{ t.detalhe|truncate(120, True, '…', 0) }}</small>{% endif %}
+    </div>
+    {% endfor %}
+    <p class="cofre-nota">🔒 {% if modo_local %}As senhas ficam no cofre deste computador{% else %}No seu painel, as senhas ficam cifradas no servidor; a chave fica num arquivo separado{% endif %}. O teste só confere o login: não abre intimação nem conta como ciência.</p>
+  </section>
+</div>
+{% endblock %}

@@ -1,0 +1,131 @@
+{% set acesso = acesso_lex_local() %}
+{% set cx = acesso.conexao %}
+<section class="cartao" id="acesso-lex" aria-labelledby="titulo-acesso-lex">
+  <h2 id="titulo-acesso-lex">Ligar o Lex ao seu plano do Claude</h2>
+  <div class="config-linha">
+    {% if acesso.claude %}
+    <span class="selo selo-ok">Claude Code instalado</span>
+    {% else %}
+    <span class="selo selo-neutro">Claude Code: instalamos ao conectar</span>
+    {% endif %}
+    {% if acesso.guardado %}
+    <span class="selo selo-ok">Acesso ao plano guardado</span>
+    {% else %}
+    <span class="selo selo-alerta">Falta conectar o Lex</span>
+    {% endif %}
+    {% if acesso.casa %}
+    <span class="selo selo-ok">Pasta da Banca encontrada</span>
+    {% else %}
+    <span class="selo selo-alerta">Pasta da Banca não encontrada</span>
+    {% endif %}
+  </div>
+  {% if not acesso.casa %}
+  <p class="campo-ajuda">O Lex escreve as minutas com a Banca. Para indicar a pasta do seu escritório na Banca, peça ao Claude, numa conversa aberta nessa pasta: «Ligue o Lex na Controladoria do Lex Lab».</p>
+  {% endif %}
+  {% if modo_apresentacao %}
+  <p>Indisponível no modo apresentação.</p>
+  {% else %}
+  <p>Um clique e o Lex passa a trabalhar sozinho com o seu plano do Claude (Pro ou Max). Abrimos uma aba no navegador; você só entra na sua conta Claude e clica em <strong>Autorizar</strong>. Não precisa abrir PowerShell nem copiar nada.</p>
+
+  <form method="post" action="{{ url_for('acesso_lex.conectar_iniciar') }}" class="config-linha" id="form-conectar"{% if cx.andamento %} hidden{% endif %}>
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    <button type="submit" class="btn">{{ 'Conectar de novo' if acesso.guardado else 'Conectar o Lex' }}</button>
+  </form>
+
+  <div id="conectar-estado" class="conectar-estado" aria-live="polite"{% if not cx.etapa %} hidden{% endif %}
+       data-url="{{ url_for('acesso_lex.conectar_estado') }}" data-andamento="{{ '1' if cx.andamento else '0' }}">
+    <p class="conectar-mensagem aviso {% if cx.etapa == 'pronto' %}aviso-ok{% elif cx.etapa == 'erro' %}aviso-erro{% else %}aviso-aviso{% endif %}">{{ cx.mensagem }}</p>
+    <div class="conectar-autorizar"{% if cx.etapa != 'autorizar' %} hidden{% endif %}>
+      <p>A aba não abriu? <a class="btn btn-secundario conectar-link" href="{{ cx.link or '#' }}" target="_blank" rel="noopener noreferrer">Abrir a página de autorização</a></p>
+      <form class="config-linha conectar-codigo" action="{{ url_for('acesso_lex.conectar_codigo') }}" method="post" autocomplete="off">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <label class="campo-ajuda" for="campo-codigo-anthropic">Se a página da Anthropic mostrar um código, copie e cole aqui:</label>
+        <input type="text" name="codigo" id="campo-codigo-anthropic" class="busca" spellcheck="false" autocomplete="off" placeholder="código da página da Anthropic">
+        <button type="submit" class="btn btn-secundario">Enviar código</button>
+      </form>
+      <form method="post" action="{{ url_for('acesso_lex.conectar_cancelar') }}">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-secundario">Cancelar</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="config-linha">
+    <form method="post" action="{{ url_for('acesso_lex.testar') }}" class="form-carregando">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-secundario" data-ocupado="Testando (até 2 minutos)…">Testar acesso</button>
+    </form>
+    {% if acesso.guardado %}
+    <form method="post" action="{{ url_for('acesso_lex.apagar') }}" onsubmit="return confirm('Apagar o acesso guardado? O Lex passa a usar o login normal do Claude Code.');">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <button type="submit" class="btn btn-secundario">Apagar acesso</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <details class="outra-forma">
+    <summary>Outra forma: gerar o código no PowerShell ou no Terminal</summary>
+    <ol class="chave-passos">
+      <li>Abra o PowerShell (no Windows) ou o Terminal (no Mac).</li>
+      <li>Digite <code>claude setup-token</code> e tecle Enter.</li>
+      <li>Autorize no navegador que abrir e copie o código que aparece (começa com <code>sk-ant-oat</code>).</li>
+      <li>Cole abaixo e clique em “Guardar acesso”. O código vai para o cofre do computador e não aparece de novo.</li>
+    </ol>
+    <form method="post" action="{{ url_for('acesso_lex.salvar') }}" class="config-linha" autocomplete="off">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="password" name="codigo" class="busca" autocomplete="off" spellcheck="false"
+             placeholder="sk-ant-oat…" aria-label="Código do claude setup-token" required>
+      <button type="submit" class="btn">{{ 'Trocar acesso' if acesso.guardado else 'Guardar acesso' }}</button>
+    </form>
+  </details>
+  {% endif %}
+</section>
+<script>
+  // Acompanha a conexão enquanto ela anda (consulta o estado a cada 2 s). Sem script, a
+  // página mostra o estado do momento em que carregou.
+  (function () {
+    var caixa = document.getElementById('conectar-estado');
+    if (!caixa) return;
+    var formConectar = document.getElementById('form-conectar');
+    var msg = caixa.querySelector('.conectar-mensagem');
+    var autorizar = caixa.querySelector('.conectar-autorizar');
+    var link = caixa.querySelector('.conectar-link');
+    var formCodigo = caixa.querySelector('.conectar-codigo');
+    var tons = {pronto: 'aviso-ok', erro: 'aviso-erro'};
+    var andava = caixa.dataset.andamento === '1';
+    function mostrar(e) {
+      if (!e || !e.etapa) return;
+      caixa.hidden = false;
+      msg.textContent = e.mensagem || '';
+      msg.className = 'conectar-mensagem aviso ' + (tons[e.etapa] || 'aviso-aviso');
+      autorizar.hidden = e.etapa !== 'autorizar';
+      if (e.link) link.href = e.link;
+      if (formConectar) formConectar.hidden = !!e.andamento;
+      // Terminou enquanto a página estava aberta: recarrega para os selos atualizarem.
+      if (!e.andamento && andava) { window.location.reload(); }
+    }
+    function consultar() {
+      fetch(caixa.dataset.url, {credentials: 'same-origin', cache: 'no-store'})
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (e) {
+          mostrar(e);
+          if (e && e.andamento) setTimeout(consultar, 2000);
+        })
+        .catch(function () { setTimeout(consultar, 4000); });
+    }
+    if (andava) consultar();
+    if (formCodigo) {
+      formCodigo.addEventListener('submit', function (ev) {
+        ev.preventDefault();
+        var dados = new FormData(formCodigo);
+        fetch(formCodigo.action, {headers: {'X-CSRF': dados.get('csrf') || ''},
+                                  method: 'POST', body: dados, credentials: 'same-origin'})
+          .then(function (r) { return r.json(); })
+          .then(function (res) {
+            if (res.ok) { msg.textContent = 'Código enviado. Conferindo…'; formCodigo.reset(); }
+            else { alert(res.mensagem || 'Código não aceito.'); }
+          });
+      });
+    }
+  })();
+</script>

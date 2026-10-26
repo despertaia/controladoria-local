@@ -1,0 +1,26 @@
+# Segredos: nunca versionar
+.env
+.env.*
+!.env.example
+
+# Ambiente Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Dados do escritório (processos, clientes, peças)
+dados/
+peticoes/
+cache/
+grupos/
+documentos/
+downloads/
+relatorios/
+*.pdf
+*.xlsx
+
+# Editores / sistema
+.vscode/
+.idea/
+.DS_Store

@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block titulo %}Novidades · Controladoria{% endblock %}
+{% block conteudo %}
+
+<div class="cabecalho-pagina">
+  <div>
+    <p class="sobretitulo">Novidades</p>
+    <h1>O que mudou na Controladoria</h1>
+    <p class="subtitulo">{% if versao_atual %}Você está na versão {{ versao_atual }}. {% endif %}A mais recente vem primeiro.</p>
+  </div>
+</div>
+
+{% if aviso_versao %}
+<div class="aviso aviso-aviso">A versão {{ aviso_versao.nova }} já está disponível. Peça ao Claude: «Atualize a Controladoria do Lex Lab».</div>
+{% endif %}
+
+<div class="novidades">
+  {% for secao in novidades %}
+  <section class="cartao novidade{{ ' novidade-atual' if secao.versao == versao_atual }}" id="v{{ secao.versao }}">
+    <h2>Versão {{ secao.versao }}{% if secao.versao == versao_atual %} <span class="selo selo-ok">a sua</span>{% endif %}</h2>
+    {% if secao.data %}<p class="novidade-data">{{ secao.data }}</p>{% endif %}
+    <ul>
+      {% for item in secao.itens %}<li>{{ item }}</li>{% endfor %}
+    </ul>
+  </section>
+  {% else %}
+  <p class="subtitulo">Nenhuma novidade registrada nesta instalação.</p>
+  {% endfor %}
+</div>
+
+{% endblock %}

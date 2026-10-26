@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block titulo %}Resultados · Controladoria{% endblock %}
+{% block conteudo %}
+
+<section class="saudacao">
+  <div>
+    <p class="sobretitulo">Resultados do Lex</p>
+    <h1>Quanto o Lex adianta o seu dia</h1>
+    <p class="subtitulo">Tempo desde que a publicação chegou ao painel até a peça ficar pronta para a sua revisão.</p>
+  </div>
+</section>
+
+<nav class="abas" aria-label="Período">
+  {% for valor, nome in periodos %}
+  <a href="{{ url_for('resultados_tela', periodo=valor) }}" class="{{ 'ativo' if r.periodo == valor }}"{% if r.periodo == valor %} aria-current="page"{% endif %}>{{ nome }}</a>
+  {% endfor %}
+</nav>
+
+{% if not r.total_pecas %}
+<section class="cartao">
+  <p class="vazio">Ainda não há peças do Lex neste período.</p>
+</section>
+{% else %}
+
+<section class="kpis kpis-4" aria-label="Números do período">
+  <div class="kpi destaque">
+    <span class="kpi-rotulo">Tempo médio até a peça pronta</span>
+    <span class="kpi-valor">{{ r.tempo_medio_total or '—' }}</span>
+    <span class="kpi-nota">desde que a publicação chegou</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-rotulo">Tempo médio do Lex</span>
+    <span class="kpi-valor">{{ r.tempo_medio_lex or '—' }}</span>
+    <span class="kpi-nota">só o trabalho do Lex</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-rotulo">Peças no período</span>
+    <span class="kpi-valor">{{ r.total_pecas }}</span>
+    <span class="kpi-nota">prontas para revisão</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-rotulo">Citações conferidas de primeira</span>
+    <span class="kpi-valor">{% if r.citacoes_de_primeira is not none %}{{ r.citacoes_de_primeira }}%{% else %}—{% endif %}</span>
+    <span class="kpi-nota">peças sem nenhuma citação a corrigir</span>
+  </div>
+</section>
+
+<div class="grade-resultados">
+  <section class="cartao">
+    <h2>Peças por mês</h2>
+    {% for b in por_mes %}
+    <div class="barra-linha barra-linha-larga">
+      <span class="barra-rotulo">{{ b.rotulo }}</span>
+      <span class="barra" aria-hidden="true"><i style="width: {{ b.percentual }}%"></i></span>
+      <span class="barra-valor">{{ b.quantidade }}</span>
+    </div>
+    {% endfor %}
+  </section>
+
+  <section class="cartao">
+    <h2>Peças por tipo</h2>
+    {% for b in por_tipo %}
+    <div class="barra-linha barra-linha-larga">
+      <span class="barra-rotulo">{{ b.rotulo }}</span>
+      <span class="barra" aria-hidden="true"><i style="width: {{ b.percentual }}%"></i></span>
+      <span class="barra-valor">{{ b.quantidade }}</span>
+    </div>
+    {% endfor %}
+  </section>
+</div>
+
+<section class="cartao">
+  <h2>Melhores marcas</h2>
+  {% if r.melhores %}
+  <ol class="marcas">
+    {% for m in r.melhores %}
+    <li>
+      <span><strong>{{ m.squad }}</strong> <span class="marca-detalhe">· pronta em {{ m.data }}</span></span>
+      <span class="marca-tempo">{{ m.texto }}</span>
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="vazio">Sem marcas ainda.</p>
+  {% endif %}
+</section>
+
+{% endif %}
+{% endblock %}

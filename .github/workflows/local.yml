@@ -1,0 +1,131 @@
+name: Controladoria local
+
+on:
+  push:
+    branches: [local, main]
+  workflow_dispatch:
+
+jobs:
+  windows-e-mac:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      # Cofre de teste em arquivo (só no CI): a tela de Configuração precisa de um cofre
+      # que funcione; no computador do advogado é o Gerenciador de Credenciais / Chaves.
+      PYTHON_KEYRING_BACKEND: keyrings.alt.file.PlaintextKeyring
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Python 3.12 e dependências
+        shell: bash
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv -r requirements-local.txt -r requirements-dev.txt keyrings.alt
+
+      - name: Testes
+        shell: bash
+        run: |
+          # Testes só de Mac/Linux (bash, processos POSIX) se pulam sozinhos no Windows.
+          if [ "$RUNNER_OS" = Windows ]; then
+            .venv/Scripts/python.exe -m pytest -q -rs
+          else
+            .venv/bin/python -m pytest -q
+          fi
+
+      - name: Conectar o Lex com o claude real (até o link de autorização)
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = Windows ]; then
+            .venv/Scripts/python.exe scripts/sonda_conectar_lex.py
+          else
+            .venv/bin/python scripts/sonda_conectar_lex.py
+          fi
+
+      - name: Instalador (Windows PowerShell 5.1)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $saida = powershell -NoProfile -ExecutionPolicy Bypass -File local\instalar.ps1 -Origem "$PWD" -Destino "$env:RUNNER_TEMP\Controladoria" -SemInicioAutomatico | Out-String
+          $codigo = $LASTEXITCODE
+          Write-Host $saida
+          if ($codigo -ne 0) { exit $codigo }
+          $versao = (Get-Content VERSAO -Raw).Trim()
+          if ($saida -notmatch ("Controladoria vers.{1,3}o " + [regex]::Escape($versao) + " instalada")) { Write-Error "o instalador não disse a versão"; exit 1 }
+          $lnk = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Controladoria.lnk'
+          if (-not (Test-Path $lnk)) { Write-Error "atalho da Área de Trabalho não foi criado"; exit 1 }
+
+      - name: Instalador (Mac)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: bash local/instalar.sh --origem "$PWD" --destino "$RUNNER_TEMP/Controladoria" --sem-inicio-automatico
+
+      - name: Sobe a Controladoria instalada (Windows, pythonw)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $d = "$env:RUNNER_TEMP\Controladoria"
+          & uv pip install --python "$d\.venv\Scripts\python.exe" keyrings.alt
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Start-Process -FilePath "$d\.venv\Scripts\pythonw.exe" -ArgumentList '-m', 'local.iniciar', '--sem-navegador' -WorkingDirectory $d
+
+      - name: Sobe a Controladoria instalada (Mac)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          d="$RUNNER_TEMP/Controladoria"
+          uv pip install --python "$d/.venv/bin/python" keyrings.alt
+          cd "$d" && nohup .venv/bin/python -m local.iniciar --sem-navegador > "$RUNNER_TEMP/iniciar.out" 2>&1 &
+
+      - name: Confere /saude e o caminho para a Configuração
+        shell: bash
+        run: |
+          ok=0
+          for i in $(seq 1 60); do
+            if curl -fsS http://127.0.0.1:5056/saude; then ok=1; break; fi
+            sleep 1
+          done
+          echo
+          if [ "$ok" -ne 1 ]; then
+            echo "o painel não respondeu em 60 s"
+            cat "$RUNNER_TEMP/Controladoria/dados/controladoria.log" || true
+            cat "$RUNNER_TEMP/iniciar.out" 2>/dev/null || true
+            exit 1
+          fi
+          resposta=$(curl -s -o /dev/null -w '%{http_code} %{redirect_url}' http://127.0.0.1:5056/)
+          echo "GET / -> $resposta"
+          case "$resposta" in
+            "302 "*/configurar) ;;
+            *) echo "esperava 302 para /configurar"; cat "$RUNNER_TEMP/Controladoria/dados/controladoria.log" || true; exit 1 ;;
+          esac
+          curl -fsS -o /dev/null http://127.0.0.1:5056/configurar
+
+      # Por último: forçar o download reinstala o mesmo Python 3.12.10 do runner e tira o
+      # Python em que a primeira instalação se apoia (no computador real só baixa sem Python).
+      - name: Instalador num Windows sem Python (baixa o oficial do python.org)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $env:CONTROLADORIA_BAIXAR_PYTHON = '1'
+          $saida = powershell -NoProfile -ExecutionPolicy Bypass -File local\instalar.ps1 -Origem "$PWD" -Destino "$env:RUNNER_TEMP\Controladoria2" -SemInicioAutomatico | Out-String
+          $codigo = $LASTEXITCODE
+          Write-Host $saida
+          if ($codigo -ne 0) { exit $codigo }
+          if ($saida -notmatch 'Python 3.12 oficial') { Write-Error "nao baixou o Python oficial"; exit 1 }
+          if ($saida -match 'seguindo pelo uv') { Write-Error "caiu no uv"; exit 1 }
+          $cfg = Get-Content "$env:RUNNER_TEMP\Controladoria2\.venv\pyvenv.cfg" -Raw
+          Write-Host $cfg
+          $base = ([regex]::Match($cfg, '(?m)^home\s*=\s*(.+)$').Groups[1].Value.Trim())
+          $sig = Get-AuthenticodeSignature (Join-Path $base 'python.exe')
+          Write-Host ("assinatura: {0} {1}" -f $sig.Status, $sig.SignerCertificate.Subject)
+          if ($sig.Status -ne 'Valid') { Write-Error "Python base sem assinatura valida"; exit 1 }
+
+      - name: Registro do lançador
+        if: always()
+        shell: bash
+        run: cat "$RUNNER_TEMP/Controladoria/dados/controladoria.log" 2>/dev/null || true

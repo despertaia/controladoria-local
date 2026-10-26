@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block titulo %}Grupos · Controladoria{% endblock %}
+{% block conteudo %}
+
+<div class="cabecalho-pagina">
+  <div>
+    <h1>Grupos</h1>
+    <p class="subtitulo">Coleções de processos (ex.: a carteira de um cliente) para baixar e analisar juntas.</p>
+  </div>
+  {% if not modo_apresentacao %}<a href="{{ url_for('grupo_novo') }}" class="btn">+ Novo grupo</a>{% endif %}
+</div>
+
+{% if modo_apresentacao %}
+  <div class="aviso">Grupos ficam indisponíveis no modo apresentação.</div>
+  {% if grupos %}
+  <div class="tabela-wrap">
+  <table class="tabela">
+    <thead><tr><th>Grupo</th></tr></thead>
+    <tbody>
+      {% for g in grupos %}<tr><td>Grupo {{ loop.index }}</td></tr>{% endfor %}
+    </tbody>
+  </table>
+  </div>
+  {% endif %}
+{% else %}
+
+{% if not grupos %}
+  <div class="cartao">
+    <p>Você ainda não tem grupos. Clique em <strong>+ Novo grupo</strong>, dê um nome
+       (pode ser o nome do cliente) e cole a lista de processos.</p>
+  </div>
+{% else %}
+  <div class="tabela-wrap">
+  <table class="tabela">
+    <thead>
+      <tr><th>Grupo</th><th class="num">Processos</th><th>Criado em</th><th>Situação</th></tr>
+    </thead>
+    <tbody>
+      {% for g in grupos %}
+      {% set st = status(g.slug) %}
+      <tr class="linha" onclick="window.location='{{ url_for('grupo_detalhe', slug=g.slug) }}'">
+        <td>
+          <span class="numero">{{ g.nome }}</span>
+          {% if g.descricao %}<div class="vara">{{ g.descricao }}</div>{% endif %}
+        </td>
+        <td class="num">{{ g.numeros|length }}</td>
+        <td class="atualizado">{{ g.criado_em.replace('T',' ')[:16] }}</td>
+        <td>
+          {% if st and st.estado == 'rodando' %}<span class="tag">baixando… {{ st.indice }}/{{ st.total }}</span>
+          {% elif st and st.estado == 'na_fila' %}<span class="tag">na fila</span>
+          {% elif st and st.estado == 'concluido' %}<span class="tag" style="background:var(--verde-fundo); color:var(--verde);">concluído</span>
+          {% elif st and st.estado == 'erro' %}<span class="tag" style="background:var(--vermelho-fundo); color:var(--vermelho);">erro</span>
+          {% else %}<span class="pendente">—</span>{% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  </div>
+{% endif %}
+{% endif %}
+
+{% endblock %}

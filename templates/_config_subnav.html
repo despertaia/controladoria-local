@@ -1,0 +1,6 @@
+<nav class="subnav-config" aria-label="Configurações">
+  <a href="{{ url_for('configuracoes_lex') }}"{% if request.endpoint == 'configuracoes_lex' %} class="ativo" aria-current="page"{% endif %}>Lex</a>
+  {% if not modo_apresentacao %}
+  <a href="{{ url_for('configuracoes_tribunais') }}"{% if request.endpoint == 'configuracoes_tribunais' %} class="ativo" aria-current="page"{% endif %}>Tribunais</a>
+  {% endif %}
+</nav>

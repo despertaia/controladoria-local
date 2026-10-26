@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block titulo %}Cockpit · Controladoria{% endblock %}
+{% block conteudo %}
+
+<section class="saudacao">
+  <div>
+    <p class="sobretitulo">{{ saudacao }}{% if primeiro_nome %}, {{ primeiro_nome }}{% endif %}</p>
+    <h1>Seu escritório hoje</h1>
+    <p class="subtitulo">
+      {{ kpis.ativos }} processo(s) em acompanhamento{% if ultima_varredura %} · última varredura em {{ ultima_varredura.quando }}{% endif %}
+    </p>
+  </div>
+  <div class="saudacao-acoes">
+    <a href="{{ url_for('carteira_tela') }}" class="btn">Abrir a carteira</a>
+    {% if not modo_apresentacao %}<a href="{{ url_for('carteira_exportar') }}" class="btn btn-secundario">Exportar Excel</a>{% endif %}
+  </div>
+</section>
+
+<section class="kpis" aria-label="Números da carteira">
+  <a class="kpi destaque" href="{{ url_for('carteira_tela') }}">
+    <span class="kpi-rotulo">Processos ativos</span><span class="kpi-valor">{{ kpis.ativos }}</span>
+  </a>
+  <div class="kpi">
+    <span class="kpi-rotulo">Movimentaram · 7 dias</span><span class="kpi-valor">{{ kpis.movimentaram_7d }}</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-rotulo">Parados há +90 dias</span>
+    <span class="kpi-valor {{ 'tom-aviso' if kpis.parados_90d }}">{{ kpis.parados_90d }}</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-rotulo">Publicações · 30 dias</span><span class="kpi-valor">{{ kpis.publicacoes_30d }}</span>
+  </div>
+  <div class="kpi">
+    <span class="kpi-rotulo">Valor em causa</span><span class="kpi-valor">{{ kpis.valor_em_causa }}</span>
+  </div>
+  <a class="kpi" href="{{ url_for('carteira_tela', aba='a_conferir') }}">
+    <span class="kpi-rotulo">A conferir</span><span class="kpi-valor">{{ kpis.a_conferir }}</span>
+  </a>
+</section>
+
+<section class="cartao quadro-secao" aria-label="Quadro de demandas">
+  <div id="quadro" data-versao="{{ quadro.versao }}" data-url="{{ url_for('quadro_fragmento') }}">
+    {% include "_quadro.html" %}
+  </div>
+</section>
+<div class="quadro-aviso" id="quadro-aviso" role="status" aria-live="polite" hidden></div>
+<script src="{{ url_for('static', filename='quadro.js') }}" defer></script>
+
+<div class="grade-cockpit">
+  <section class="cartao">
+    <h2>Atividade recente</h2>
+    {% if atividade %}
+    <ol class="atividade">
+      {% for item in atividade %}
+      <li>
+        <span class="atividade-data">{{ item.data_br }}</span>
+        <div>
+          <a href="{{ url_for('processo', numero=item.numero) }}" class="atividade-processo">{{ item.cliente or item.numero_formatado }}</a>
+          <span class="selo selo-{{ 'aviso' if item.tipo == 'publicacao' else 'neutro' }}">{{ 'Publicação' if item.tipo == 'publicacao' else 'Andamento' }}</span>
+          <p class="atividade-texto{{ ' texto-oculto' if modo_apresentacao }}">{{ texto_oculto if modo_apresentacao else item.texto }}</p>
+        </div>
+      </li>
+      {% endfor %}
+    </ol>
+    {% else %}
+    <p class="vazio">Ainda não há movimentação registrada. Rode a primeira varredura da carteira.</p>
+    {% endif %}
+  </section>
+
+  <div>
+  <section class="cartao">
+    <h2>Carteira por tribunal</h2>
+    {% for t in por_tribunal %}
+    <div class="barra-linha">
+      <span class="barra-rotulo">{{ t.tribunal }}</span>
+      <span class="barra" aria-hidden="true"><i style="width: {{ t.percentual }}%"></i></span>
+      <span class="barra-valor">{{ t.quantidade }}</span>
+    </div>
+    {% else %}
+    <p class="vazio">Sem processos ativos.</p>
+    {% endfor %}
+  </section>
+
+  <section class="cartao">
+    <h2>Situação da carteira</h2>
+    {% for s in por_situacao %}
+    <div class="situacao-linha">
+      <span class="selo selo-{{ s.tom }}">{{ s.rotulo }}</span>
+      <span class="barra-valor">{{ s.quantidade }}</span>
+    </div>
+    {% endfor %}
+  </section>
+  </div>
+</div>
+
+{% endblock %}
