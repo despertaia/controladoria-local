@@ -227,7 +227,8 @@ Não altere nada fora dos marcadores. Use a ferramenta de edição de arquivos, 
 O painel abre em http://127.0.0.1:5056 (atalho "Controladoria" na Área de Trabalho/Mesa).
 Para atualizar, consertar, desinstalar ou ligar o Lex na Controladoria, siga o roteiro
 https://raw.githubusercontent.com/despertaia/controladoria-local/main/INSTALAR.md
-(atualizar = seção Atualizar, dizendo a versão e as novidades; não abrir = Problemas
+(atualizar = seção Atualizar, dizendo a versão e as novidades; «Reaplique as melhorias
+guardadas da Controladoria do Lex Lab» = seção Atualizar, item 4; não abrir = Problemas
 comuns; ligar o Lex = Passo 6). Nunca peça senha, CPF ou código de acesso no chat: o
 advogado digita na tela da Controladoria.
 <!-- controladoria-lexlab:fim -->
@@ -270,13 +271,50 @@ disponível". O mentorado pede: «Atualize a Controladoria do Lex Lab».
 
 1. **Antes**, anote a versão instalada: leia o arquivo `VERSAO` da pasta `Controladoria`
    do usuário (ou, com o painel aberto, `curl.exe -s http://127.0.0.1:5056/saude` e veja
-   `"versao"`). Se não houver o arquivo, a instalação é anterior à 1.0.0.
-2. Rode o mesmo comando do Passo 3. Os dados, a configuração e as senhas são mantidos.
-   A última linha do instalador diz "Controladoria atualizada da versão Y para a X."
-3. Leia o `NOVIDADES.md` da pasta `Controladoria` (ou
+   `"versao"`). Se não houver o arquivo, a instalação é anterior à 1.2.0.
+2. **Confira se o mentorado mudou o código** (melhorias feitas por ele ou pelo Claude).
+   Rode o comando do Passo 3 com a opção de só conferir; ela não muda nada:
+   - Windows: `powershell -NoProfile -ExecutionPolicy Bypass -c "[Environment]::SetEnvironmentVariable('CONTROLADORIA_SO_CONFERIR','1','Process'); irm https://raw.githubusercontent.com/despertaia/controladoria-local/main/local/instalar.ps1 | iex"`
+   - Mac: `curl -fsSL https://raw.githubusercontent.com/despertaia/controladoria-local/main/local/instalar.sh | bash -s -- --so-conferir`
+
+   Se a saída não disser «Nenhuma alteração sua» nem «Encontrei…», a conferência não
+   rodou: pare e não atualize; diga ao mentorado e peça ajuda ao Daniel. Duas outras
+   saídas são normais: «A Controladoria ainda não está instalada em …» (instalação nova:
+   siga o Passo 3) e «Não consegui conferir: o Python da instalação não foi encontrado…»
+   (a atualização guarda uma cópia de todo o código antigo em `melhorias-guardadas`; siga,
+   avisando o mentorado).
+
+   Se aparecer «Nenhuma alteração sua», siga. Se aparecer uma lista, diga ao mentorado
+   quais arquivos ele mudou e explique que a atualização **guarda uma cópia** deles em
+   `melhorias-guardadas` e depois troca o código. Se a lista disser «comparado com a
+   versão nova…» (não há a impressão digital da versão instalada), avise que ela pode
+   trazer também mudanças da própria atualização, não só as dele. Peça o «sim» antes de
+   seguir.
+3. Rode o mesmo comando do Passo 3, sem a opção de conferir. Os dados, a configuração e
+   as senhas são mantidos. O instalador diz "Controladoria atualizada da versão Y para a
+   X." e, se guardou algo, "Guardei N alterações suas em …". Depois de qualquer tentativa
+   de atualizar, mesmo uma que falhou, veja se há em `melhorias-guardadas` (dentro da
+   pasta `Controladoria`) uma pasta com a data de hoje; se houver, vá ao item 4.
+4. **Se ele guardou alterações**, ofereça: «Quer que eu refaça as suas melhorias na
+   versão nova?». Comece também por aqui quando o mentorado pedir «Reaplique as melhorias
+   guardadas da Controladoria do Lex Lab» (o pedido já é o sim). Com o sim, na pasta
+   `Controladoria`:
+   - leia o `LEIA-ME.txt` da pasta guardada (a mais recente em `melhorias-guardadas`);
+   - instale as ferramentas de teste: Windows `.venv\Scripts\python.exe -m pip install -r
+     requirements-dev.txt`; Mac `uv pip install --python .venv/bin/python -r
+     requirements-dev.txt` (se não achar o `uv`, use `~/.local/bin/uv`);
+   - **antes de refazer qualquer coisa**, rode os testes uma vez (`.venv/bin/python -m
+     pytest -q` no Mac, `.venv\Scripts\python.exe -m pytest -q` no Windows) e anote o
+     resultado: é a base;
+   - compare cada arquivo guardado com o da versão nova e refaça só o que ainda faz
+     sentido (a versão nova pode já ter resolvido a mesma coisa: diga isso);
+   - rode os testes de novo e compare com a base: só contam as falhas novas; se uma falha
+     nova vier do que foi refeito, desfaça essa parte. Depois reinicie a Controladoria;
+   - diga em frases curtas o que foi refeito e o que ficou de fora.
+5. Leia o `NOVIDADES.md` da pasta `Controladoria` (ou
    https://raw.githubusercontent.com/despertaia/controladoria-local/main/NOVIDADES.md).
    Cada versão é uma seção `## X — data`, com os itens embaixo, a mais recente primeiro.
-4. Diga ao mentorado a versão nova e o que mudou: só os itens das seções **depois da
+6. Diga ao mentorado a versão nova e o que mudou: só os itens das seções **depois da
    versão antiga até a nova** (não repita as novidades que ele já tinha). Em frases
    curtas, como estão no arquivo. Por exemplo:
 
@@ -330,3 +368,10 @@ no PowerShell, `echo $HOME` no Mac/Git Bash) e use o caminho completo:
   e explique em uma linha. Rodar o Passo 3 de novo resolve a maioria dos casos.
 - **Mac pede permissão para acessar a pasta Mesa / Documentos:** peça ao mentorado para
   clicar em Permitir.
+- **«Não foi possível verificar seu navegador» ao conectar o Lex**: é a verificação da
+  página de entrada do Claude, não da Controladoria. Em Configurações › Lex, clique em
+  «Copiar o link», abra no navegador em que o mentorado já usa o Claude e, se continuar,
+  desligue VPN e bloqueadores. Use só a aba mais recente.
+- **«A Anthropic não aceitou esse código»**: o código era de uma aba antiga ou ficou
+  incompleto. A Controladoria já abriu uma autorização nova: feche as outras abas e use
+  essa. Se repetir 3 vezes, clique em «Copiar diagnóstico» e cole no grupo da mentoria.

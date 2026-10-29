@@ -3,10 +3,11 @@
 # Pode rodar quantas vezes quiser: na segunda vez, atualiza o código e mantém os dados.
 #
 #   curl -fsSL https://raw.githubusercontent.com/despertaia/controladoria-local/main/local/instalar.sh | bash
-#   bash local/instalar.sh [--destino PASTA] [--url URL_DO_ZIP] [--origem PASTA] [--sem-inicio-automatico]
+#   bash local/instalar.sh [--destino PASTA] [--url URL_DO_ZIP] [--origem PASTA] [--sem-inicio-automatico] [--so-conferir]
 #
 # --origem instala a partir de uma pasta local (CI e testes), sem baixar nada.
 # --sem-inicio-automatico não cria o serviço nem inicia (CI).
+# --so-conferir só lista o que você mudou no código instalado; não muda nada.
 # LAUNCHCTL, AGENTES, AREA_DE_TRABALHO, UV e ESPERA_PAINEL existem só para teste; no uso
 # normal, não defina.
 #
@@ -19,12 +20,14 @@ main() {
   local URL="https://github.com/despertaia/controladoria-local/archive/refs/heads/main.zip"
   local ORIGEM=""
   local INICIO_AUTOMATICO=1
+  local SO_CONFERIR=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --destino) DESTINO="${2:?falta a pasta depois de --destino}"; shift 2 ;;
       --url) URL="${2:?falta o endereço depois de --url}"; shift 2 ;;
       --origem) ORIGEM="${2:?falta a pasta depois de --origem}"; shift 2 ;;
       --sem-inicio-automatico) INICIO_AUTOMATICO=0; shift ;;
+      --so-conferir) SO_CONFERIR=1; shift ;;
       -h|--help) sed -n '2,10p' "${BASH_SOURCE[0]:-/dev/null}" 2>/dev/null || true; return 0 ;;
       *) echo "Opção desconhecida: $1" >&2; return 1 ;;
     esac
@@ -36,9 +39,19 @@ main() {
   local ROTULO=br.com.despertaia.controladoria
   local PLIST="$AGENTES/$ROTULO.plist"
   local LOG_SERVICO="$HOME/Library/Logs/controladoria.log"
-  local PRESERVAR=" dados peticoes cache grupos .venv .env .git .pytest_cache __pycache__ "
+  local PRESERVAR=" dados peticoes cache grupos .venv .env .git .pytest_cache __pycache__ melhorias-guardadas "
   PASSO="preparar"
-  trap 'echo "" >&2; echo "ERRO: a instalação parou na etapa \"$PASSO\". Nada dos seus dados foi apagado." >&2; echo "Se precisar de ajuda, copie as mensagens acima." >&2' ERR
+  # GUARDADO: o aviso de local/melhorias.py ("Guardei N alterações suas em ...").
+  # Sai no fim, e também quando a instalação falha depois de guardar.
+  local GUARDADO=""
+  dizer_guardado() {
+    if [ -n "${GUARDADO:-}" ]; then
+      echo "$GUARDADO"
+      echo "Para refazer na versão nova, peça ao Claude: «Reaplique as melhorias guardadas da Controladoria do Lex Lab»."
+    fi
+    return 0
+  }
+  trap 'echo "" >&2; echo "ERRO: a instalação parou na etapa \"$PASSO\". Nada dos seus dados foi apagado." >&2; echo "Se precisar de ajuda, copie as mensagens acima." >&2; dizer_guardado >&2' ERR
 
   echo "== Controladoria do Lex Lab (Desperta.IA): instalação =="
   echo "Pasta: $DESTINO"
@@ -66,13 +79,30 @@ main() {
   [ -f "$DESTINO/VERSAO" ] && VERSAO_ANTIGA=$(tr -d '[:space:]' < "$DESTINO/VERSAO" || true)
   [ -f "$FONTE/VERSAO" ] && VERSAO_NOVA=$(tr -d '[:space:]' < "$FONTE/VERSAO" || true)
   dizer_versao() {
-    [ -n "$VERSAO_NOVA" ] || return 0
-    if [ -n "$VERSAO_ANTIGA" ] && [ "$VERSAO_ANTIGA" != "$VERSAO_NOVA" ]; then
-      echo "Controladoria atualizada da versão $VERSAO_ANTIGA para a $VERSAO_NOVA."
-    else
-      echo "Controladoria versão $VERSAO_NOVA instalada."
+    if [ -n "$VERSAO_NOVA" ]; then
+      if [ -n "$VERSAO_ANTIGA" ] && [ "$VERSAO_ANTIGA" != "$VERSAO_NOVA" ]; then
+        echo "Controladoria atualizada da versão $VERSAO_ANTIGA para a $VERSAO_NOVA."
+      else
+        echo "Controladoria versão $VERSAO_NOVA instalada."
+      fi
     fi
+    dizer_guardado
   }
+
+  # Só conferir: lista o que o mentorado mudou no código instalado e sai sem mudar nada.
+  if [ "$SO_CONFERIR" -eq 1 ]; then
+    PASSO="conferir as suas alterações"
+    if [ ! -f "$DESTINO/local/iniciar.py" ]; then
+      echo "A Controladoria ainda não está instalada em $DESTINO."
+    elif [ -x "$DESTINO/.venv/bin/python" ]; then
+      "$DESTINO/.venv/bin/python" -I "$FONTE/local/melhorias.py" conferir "$DESTINO" "$FONTE"
+    else
+      echo "Não consegui conferir: o Python da instalação não foi encontrado. Na atualização, guardo uma cópia de todo o código antigo."
+    fi
+    rm -rf "$TMP"
+    trap - ERR
+    return 0
+  fi
 
   # 2) Para o serviço antes de trocar o código (atualização).
   PASSO="parar a versão em uso"
@@ -85,6 +115,28 @@ main() {
   mkdir -p "$DESTINO"
   local DEST_ABS
   DEST_ABS=$(cd "$DESTINO" && pwd)
+  # Antes de trocar o código: guarda o que o mentorado mudou nele (local/melhorias.py).
+  guardar_tudo() {
+    local copia item nome
+    copia="$DEST_ABS/melhorias-guardadas/$(date +%Y-%m-%d)-tudo-v${VERSAO_ANTIGA:-desconhecida}"
+    mkdir -p "$copia"
+    for item in "$FONTE"/* "$FONTE"/.[!.]*; do
+      [ -e "$item" ] || continue
+      nome=$(basename "$item")
+      case "$PRESERVAR" in *" $nome "*) continue ;; esac
+      [ -e "$DEST_ABS/$nome" ] && cp -R "$DEST_ABS/$nome" "$copia/$nome"
+    done
+    GUARDADO="Não deu para comparar o código; guardei uma cópia de todo o código antigo em $copia"
+  }
+  if [ "$FONTE" != "$DEST_ABS" ] && [ -f "$DEST_ABS/local/iniciar.py" ]; then
+    PASSO="guardar as suas alterações"
+    if [ -x "$DEST_ABS/.venv/bin/python" ] && GUARDADO=$("$DEST_ABS/.venv/bin/python" -I "$FONTE/local/melhorias.py" guardar "$DEST_ABS" "$FONTE"); then
+      :
+    else
+      guardar_tudo
+    fi
+    PASSO="copiar os arquivos"
+  fi
   if [ "$FONTE" != "$DEST_ABS" ]; then
     local item nome
     for item in "$FONTE"/* "$FONTE"/.[!.]*; do

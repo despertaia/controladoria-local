@@ -1,0 +1,2 @@
+[31C[1A*************************************************ado123
+[2K[1A[2K[G[1A[1C[4A[38;5;211mOAuth error: That code wasn't accepted. It may be incomplete, expired, already used, or from an earlier sign-in attempt. Sign in again to get a new code.[2B[39m[K[1C[1B[38;5;153mPress [1mEnter[22m to retry. [1B[39m[K[1B[K[1A

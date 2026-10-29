@@ -3163,3 +3163,70 @@ def test_marcador_ilegivel_e_sem_dono_e_pode_ser_regravado(tmp_path):
     assert executor.dono_do_squad(tmp_path, "pi-c7") == 7
     assert sorted(p.name for p in marca.parent.iterdir() if p.name.startswith(".")) == [
         executor.MARCA_CARTAO]
+
+
+# --- sonda do acesso: recusado x sem login x indefinido ----------------------------------
+
+import json as _json
+import subprocess as _sp
+
+from ponte_mac import executor as _ex
+
+# o "result" que o claude 2.1.312 devolveu no CI (Windows e Mac)
+_SAIDA_401 = "Failed to authenticate. API Error: 401 OAuth access token is invalid."
+_SAIDA_SEM_LOGIN = "Not logged in · Please run /login"
+
+
+def _rodar_com(stdout, returncode=1):
+    def rodar(argv, **kw):
+        return _sp.CompletedProcess(argv, returncode, stdout=stdout, stderr="")
+    return rodar
+
+
+def _json_do_claude(resultado, erro=True):
+    return _json.dumps({"is_error": erro, "result": resultado, "terminal_reason": "api_error"})
+
+
+@pytest.mark.parametrize("stdout,returncode,esperado", [
+    (_json_do_claude("ok", erro=False), 0, "ok"),
+    (_json_do_claude(_SAIDA_401), 1, "recusado"),
+    (_json_do_claude(_SAIDA_SEM_LOGIN), 1, "sem_login"),
+    ("", 1, "indefinido"),
+])
+def test_classificar_acesso(tmp_path, stdout, returncode, esperado):
+    assert _ex.classificar_acesso("x", tmp_path, rodar=_rodar_com(stdout, returncode)) == esperado
+
+
+@pytest.mark.parametrize("stdout,returncode,esperado", [
+    (_json_do_claude("ok", erro=False), 0, True),
+    (_json_do_claude(_SAIDA_401), 1, False),
+    (_json_do_claude(_SAIDA_SEM_LOGIN), 1, False),  # a ponte trata igual a recusado
+    ("", 1, None),
+    (_json_do_claude("Not logged in"), 1, None),  # sem "please run /login": como sempre, None
+    ("OAuth token has expired", 1, False),  # "oauth token" em texto puro
+    (_json_do_claude("The OAuth token is invalid"), 1, False),
+])
+def test_validar_acesso_continua_igual(tmp_path, stdout, returncode, esperado):
+    assert _ex.validar_acesso("x", tmp_path, rodar=_rodar_com(stdout, returncode)) is esperado
+
+
+def test_classificar_sem_claude_e_indefinido(tmp_path):
+    def rodar(argv, **kw):
+        raise FileNotFoundError("claude")
+    assert _ex.classificar_acesso("x", tmp_path, rodar=rodar) == "indefinido"
+
+
+def test_validar_acesso_pedido_de_login_no_stderr_puro(tmp_path):
+    def rodar(argv, **kw):
+        return _sp.CompletedProcess(argv, 1, stdout="", stderr="Please run /login")
+    assert _ex.validar_acesso("x", tmp_path, rodar=rodar) is False
+
+
+def test_validar_acesso_roda_o_claude_uma_vez(tmp_path):
+    chamadas = []
+
+    def rodar(argv, **kw):
+        chamadas.append(argv)
+        return _sp.CompletedProcess(argv, 1, stdout=_json_do_claude(_SAIDA_401), stderr="")
+    assert _ex.validar_acesso("x", tmp_path, rodar=rodar) is False
+    assert len(chamadas) == 1

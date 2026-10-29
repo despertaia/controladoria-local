@@ -27,12 +27,15 @@ def _keyring():
     return keyring
 
 
-def ler(nome: str) -> str | None:
-    """Valor guardado, ou None se não houver (ou se o cofre não responder)."""
+def ler(nome: str, estrito: bool = False) -> str | None:
+    """Valor guardado, ou None se não houver (ou se o cofre não responder). Com
+    `estrito`, o cofre que não responde levanta CofreError em vez de devolver None."""
     try:
         valor = _keyring().get_password(SERVICO, nome)
     except Exception as exc:  # noqa: BLE001 — backend nulo, cofre trancado, keyring ausente
         log.warning("Cofre: não foi possível ler %s (%s).", nome, type(exc).__name__)
+        if estrito:
+            raise CofreError(f"O cofre do sistema não abriu ({type(exc).__name__}).") from exc
         return None
     return valor or None
 

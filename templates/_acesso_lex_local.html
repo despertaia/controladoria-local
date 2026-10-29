@@ -36,7 +36,9 @@
        data-url="{{ url_for('acesso_lex.conectar_estado') }}" data-andamento="{{ '1' if cx.andamento else '0' }}">
     <p class="conectar-mensagem aviso {% if cx.etapa == 'pronto' %}aviso-ok{% elif cx.etapa == 'erro' %}aviso-erro{% else %}aviso-aviso{% endif %}">{{ cx.mensagem }}</p>
     <div class="conectar-autorizar"{% if cx.etapa != 'autorizar' %} hidden{% endif %}>
-      <p>A aba não abriu? <a class="btn btn-secundario conectar-link" href="{{ cx.link or '#' }}" target="_blank" rel="noopener noreferrer">Abrir a página de autorização</a></p>
+      <p>A aba não abriu? <a class="btn btn-secundario conectar-link" href="{{ cx.link or '#' }}" target="_blank" rel="noopener noreferrer">Abrir a página de autorização</a>
+        <button type="button" class="btn btn-secundario conectar-copiar">Copiar o link</button></p>
+      <p class="campo-ajuda">Se a página do Claude pedir para entrar ou disser «Não foi possível verificar seu navegador», copie o link e abra no navegador em que você já usa o Claude. Se continuar, desligue VPN e bloqueadores e tente de novo.</p>
       <form class="config-linha conectar-codigo" action="{{ url_for('acesso_lex.conectar_codigo') }}" method="post" autocomplete="off">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
         <label class="campo-ajuda" for="campo-codigo-anthropic">Se a página da Anthropic mostrar um código, copie e cole aqui:</label>
@@ -55,6 +57,8 @@
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-secundario" data-ocupado="Testando (até 2 minutos)…">Testar acesso</button>
     </form>
+    <button type="button" class="btn btn-secundario" id="copiar-diagnostico"
+            data-url="{{ url_for('acesso_lex.diagnostico') }}">Copiar diagnóstico</button>
     {% if acesso.guardado %}
     <form method="post" action="{{ url_for('acesso_lex.apagar') }}" onsubmit="return confirm('Apagar o acesso guardado? O Lex passa a usar o login normal do Claude Code.');">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
@@ -62,6 +66,8 @@
     </form>
     {% endif %}
   </div>
+  <p class="campo-ajuda" id="diagnostico-aviso" aria-live="polite" hidden></p>
+  <textarea id="diagnostico-texto" class="busca" rows="8" readonly hidden></textarea>
 
   <details class="outra-forma">
     <summary>Outra forma: gerar o código no PowerShell ou no Terminal</summary>
@@ -84,46 +90,112 @@
   // Acompanha a conexão enquanto ela anda (consulta o estado a cada 2 s). Sem script, a
   // página mostra o estado do momento em que carregou.
   (function () {
+    function reserva(texto) {
+      var area = document.createElement('textarea');
+      area.value = texto; document.body.appendChild(area); area.select();
+      var ok = false;
+      try { ok = document.execCommand('copy'); } catch (e) { ok = false; }
+      finally { document.body.removeChild(area); }
+      return ok ? Promise.resolve() : Promise.reject();
+    }
+    function copiar(texto) {
+      if (navigator.clipboard && window.isSecureContext !== false) {
+        return navigator.clipboard.writeText(texto).catch(function () { return reserva(texto); });
+      }
+      return reserva(texto);
+    }
+    var botaoDiag = document.getElementById('copiar-diagnostico');
+    var avisoDiag = document.getElementById('diagnostico-aviso');
+    var textoDiag = document.getElementById('diagnostico-texto');
+    if (botaoDiag) {
+      botaoDiag.addEventListener('click', function () {
+        fetch(botaoDiag.dataset.url, {credentials: 'same-origin', cache: 'no-store'})
+          .then(function (r) { return r.ok ? r.json() : Promise.reject(); })
+          .then(function (d) {
+            // O texto sempre aparece: se o navegador negar a cópia, dá para selecionar e copiar.
+            textoDiag.value = d.texto; textoDiag.hidden = false;
+            return copiar(d.texto).then(function () {
+              avisoDiag.textContent = 'Diagnóstico copiado. Cole no grupo da mentoria.';
+            }, function () {
+              textoDiag.focus(); textoDiag.select();
+              avisoDiag.textContent = 'Selecione o texto abaixo e copie (Ctrl+C ou Cmd+C). Depois cole no grupo da mentoria.';
+            });
+          })
+          .then(function () { avisoDiag.hidden = false; })
+          .catch(function () { avisoDiag.textContent = 'Não deu para copiar. Recarregue a página (F5) e tente de novo.'; avisoDiag.hidden = false; });
+      });
+    }
     var caixa = document.getElementById('conectar-estado');
     if (!caixa) return;
     var formConectar = document.getElementById('form-conectar');
     var msg = caixa.querySelector('.conectar-mensagem');
     var autorizar = caixa.querySelector('.conectar-autorizar');
     var link = caixa.querySelector('.conectar-link');
+    var botaoLink = caixa.querySelector('.conectar-copiar');
     var formCodigo = caixa.querySelector('.conectar-codigo');
     var tons = {pronto: 'aviso-ok', erro: 'aviso-erro'};
     var andava = caixa.dataset.andamento === '1';
+    var consultando = false;
     function mostrar(e) {
       if (!e || !e.etapa) return;
       caixa.hidden = false;
       msg.textContent = e.mensagem || '';
       msg.className = 'conectar-mensagem aviso ' + (tons[e.etapa] || 'aviso-aviso');
       autorizar.hidden = e.etapa !== 'autorizar';
-      if (e.link) link.href = e.link;
+      if (e.link && e.link !== link.getAttribute('href')) {
+        link.href = e.link;
+        // Link novo (outra autorização): o "Link copiado" era do link antigo.
+        if (botaoLink) botaoLink.textContent = 'Copiar o link';
+      }
+      if (formCodigo) formCodigo.querySelector('button').disabled = !!e.conferindo;
       if (formConectar) formConectar.hidden = !!e.andamento;
       // Terminou enquanto a página estava aberta: recarrega para os selos atualizarem.
       if (!e.andamento && andava) { window.location.reload(); }
     }
     function consultar() {
+      consultando = true;
       fetch(caixa.dataset.url, {credentials: 'same-origin', cache: 'no-store'})
         .then(function (r) { return r.ok ? r.json() : null; })
         .then(function (e) {
           mostrar(e);
-          if (e && e.andamento) setTimeout(consultar, 2000);
+          if (e && e.andamento) { andava = true; setTimeout(consultar, 2000); }
+          else { consultando = false; }
         })
         .catch(function () { setTimeout(consultar, 4000); });
     }
     if (andava) consultar();
+    if (botaoLink) {
+      botaoLink.addEventListener('click', function () {
+        copiar(link.href).then(function () { botaoLink.textContent = 'Link copiado'; },
+                               function () { botaoLink.textContent = 'Não deu para copiar: use Abrir a página de autorização'; });
+      });
+    }
     if (formCodigo) {
       formCodigo.addEventListener('submit', function (ev) {
         ev.preventDefault();
         var dados = new FormData(formCodigo);
         fetch(formCodigo.action, {headers: {'X-CSRF': dados.get('csrf') || ''},
                                   method: 'POST', body: dados, credentials: 'same-origin'})
-          .then(function (r) { return r.json(); })
+          .then(function (r) {
+            var tipo = r.headers.get('Content-Type') || '';
+            if (tipo.indexOf('json') === -1) {
+              return {ok: false, mensagem: 'A sessão da Controladoria expirou. Recarregue a página (F5) e tente de novo.'};
+            }
+            return r.json();
+          })
           .then(function (res) {
-            if (res.ok) { msg.textContent = 'Código enviado. Conferindo…'; formCodigo.reset(); }
-            else { alert(res.mensagem || 'Código não aceito.'); }
+            if (res.ok) {
+              formCodigo.reset();
+              msg.textContent = 'Código enviado. Conferindo com a Anthropic…';
+              if (!consultando) consultar();
+            } else {
+              msg.textContent = res.mensagem || 'Código não aceito.';
+              msg.className = 'conectar-mensagem aviso aviso-erro';
+            }
+          })
+          .catch(function () {
+            msg.textContent = 'A Controladoria não respondeu. Confira se ela está aberta e tente de novo.';
+            msg.className = 'conectar-mensagem aviso aviso-erro';
           });
       });
     }

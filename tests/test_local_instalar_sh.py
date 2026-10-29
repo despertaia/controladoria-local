@@ -116,6 +116,13 @@ def test_instalador_do_windows_diz_a_versao_e_continua_ascii():
     assert ps1.count("Write-Versao $versaoAntiga $versaoNova") == 3  # sem início automático, painel no ar e painel ainda iniciando
     assert "Controladoria atualizada da vers\\u00e3o {0} para a {1}." in ps1
     assert "Controladoria vers\\u00e3o {0} instalada." in ps1
+    assert "[switch]$SoConferir" in ps1 and "CONTROLADORIA_SO_CONFERIR" in ps1
+    assert "melhorias.py" in ps1 and "'melhorias-guardadas'" in ps1
+    # fim sem início automático, painel ainda iniciando, painel no ar e o catch da falha
+    assert ps1.count("Write-Guardado $script:Guardado") == 4
+    assert "$guardado" not in ps1  # só a variável do script: o catch final a enxerga
+    assert ps1.index("Write-Guardado $script:Guardado", ps1.index("} catch {\n    Write-Host ''")) \
+        > ps1.index("Detalhe: {0}")
 
 
 def test_instala_do_zip_e_cria_o_servico(amb):
@@ -173,3 +180,88 @@ def test_desinstalar_nao_apaga_pasta_alheia(amb):
     r = _rodar(amb, "desinstalar.sh", "--destino", str(alheia), "--apagar-dados")
     assert r.returncode != 0 and (alheia / "contrato.docx").exists()
     shutil.rmtree(alheia)
+
+
+@pytest.fixture(scope="module")
+def dist(tmp_path_factory):
+    if not (RAIZ / "scripts" / "montar_dist.py").exists():
+        pytest.skip("distribuição: só no repositório privado")
+    from scripts import montar_dist
+    destino = tmp_path_factory.mktemp("dist") / "controladoria-local"
+    montar_dist.montar(destino)
+    return destino
+
+
+def test_atualizar_guarda_as_melhorias_do_mentorado(amb, dist):
+    destino = amb["destino"]
+    r = _rodar(amb, "instalar.sh", "--origem", str(dist), "--destino", str(destino),
+               "--sem-inicio-automatico")
+    assert r.returncode == 0, r.stdout + r.stderr
+    (destino / "nucleo" / "quadro.py").write_text(
+        (destino / "nucleo" / "quadro.py").read_text() + "# melhoria do mentorado\n")
+    (destino / "nucleo" / "minha_melhoria.py").write_text("x = 1\n")
+
+    r = _rodar(amb, "instalar.sh", "--origem", str(dist), "--destino", str(destino),
+               "--so-conferir")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "alterado: nucleo/quadro.py" in r.stdout and "criado: nucleo/minha_melhoria.py" in r.stdout
+    assert "Encontrei 2 alterações suas" in r.stdout
+    assert (destino / "nucleo" / "minha_melhoria.py").exists()  # conferir não muda nada
+
+    r = _rodar(amb, "instalar.sh", "--origem", str(dist), "--destino", str(destino),
+               "--sem-inicio-automatico")
+    assert r.returncode == 0, r.stdout + r.stderr
+    ultima = r.stdout.strip().splitlines()[-1]
+    assert "Reaplique as melhorias guardadas" in ultima
+    assert "Guardei 2 alterações suas em" in r.stdout
+    guardadas = list((destino / "melhorias-guardadas").iterdir())
+    assert len(guardadas) == 1
+    assert (guardadas[0] / "nucleo" / "minha_melhoria.py").exists()
+    assert "# melhoria do mentorado" in (guardadas[0] / "nucleo" / "quadro.py").read_text()
+    assert (destino / "nucleo" / "quadro.py").read_text() == (dist / "nucleo" / "quadro.py").read_text()
+
+    r = _rodar(amb, "instalar.sh", "--origem", str(dist), "--destino", str(destino),
+               "--sem-inicio-automatico")  # sem alteração nova: não guarda de novo
+    assert "Guardei" not in r.stdout
+    assert len(list((destino / "melhorias-guardadas").iterdir())) == 1
+
+
+def test_atualizacao_que_falha_ainda_avisa_a_copia_guardada(amb, dist):
+    destino = amb["destino"]
+    r = _rodar(amb, "instalar.sh", "--origem", str(dist), "--destino", str(destino),
+               "--sem-inicio-automatico")
+    assert r.returncode == 0, r.stdout + r.stderr
+    (destino / "nucleo" / "minha_melhoria.py").write_text("x = 1\n")
+    # uv que quebra ao instalar as dependências: a falha vem depois de guardar.
+    uv = pathlib.Path(amb["env"]["UV"])
+    uv.write_text(uv.read_text().replace("#!/bin/sh\n",
+                                         '#!/bin/sh\n[ "$1" = pip ] && exit 1\n', 1))
+    r = _rodar(amb, "instalar.sh", "--origem", str(dist), "--destino", str(destino),
+               "--sem-inicio-automatico")
+    assert r.returncode != 0
+    saida = r.stdout + r.stderr
+    assert "instalar as dependências" in saida
+    assert saida.count("Guardei 1 alteração sua em") == 1, saida
+    assert saida.count("Reaplique as melhorias guardadas da Controladoria do Lex Lab") == 1
+    assert len(list((destino / "melhorias-guardadas").iterdir())) == 1
+
+
+def test_sem_python_da_instalacao_guarda_todo_o_codigo(amb, dist):
+    destino = amb["destino"]
+    r = _rodar(amb, "instalar.sh", "--origem", str(dist), "--destino", str(destino),
+               "--sem-inicio-automatico")
+    assert r.returncode == 0, r.stdout + r.stderr
+    (destino / ".venv" / "bin" / "python").unlink()
+    r = _rodar(amb, "instalar.sh", "--origem", str(dist), "--destino", str(destino),
+               "--sem-inicio-automatico")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "guardei uma cópia de todo o código antigo" in r.stdout
+    copia = next((destino / "melhorias-guardadas").iterdir())
+    assert (copia / "nucleo" / "quadro.py").exists() and not (copia / "dados").exists()
+
+
+def test_so_conferir_sem_instalacao(amb):
+    r = _rodar(amb, "instalar.sh", "--origem", str(RAIZ), "--destino", str(amb["destino"]),
+               "--so-conferir")
+    assert r.returncode == 0 and "ainda não está instalada" in r.stdout
+    assert not (amb["destino"] / "painel.py").exists()

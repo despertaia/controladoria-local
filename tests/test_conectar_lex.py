@@ -1,6 +1,7 @@
 """Botão "Conectar o Lex" (ponte_mac.conectar): o `claude setup-token` roda num terminal
 invisível; aqui o terminal é um dublê que devolve a saída que o claude real imprime."""
 
+import pathlib
 import threading
 
 import pytest
@@ -113,12 +114,145 @@ def test_codigo_colado_vai_para_o_terminal():
     terminal = TerminalFalso([TELA_INICIAL])
     cx = _conexao(terminal)
     cx._etapa, cx._terminal = conectar.AUTORIZAR, terminal
-    assert cx.colar_codigo("  abcDEF123_-#ghiJKL456  ")
+    assert cx.colar_codigo("  abcDEF123_-#ghiJKL456  ") == conectar.COLADO
     assert terminal.escrito == ["abcDEF123_-#ghiJKL456\r"]
-    assert not cx.colar_codigo("curto")
-    assert not cx.colar_codigo("tem espaço; e ponto-e-vírgula")
+    cx._conferindo_desde = None
+    assert cx.colar_codigo("curto") != conectar.COLADO
+    cx._conferindo_desde = None
+    assert cx.colar_codigo("tem espaço; e ponto-e-vírgula") != conectar.COLADO
+    cx._conferindo_desde = None
     cx._etapa = conectar.TESTANDO
-    assert not cx.colar_codigo("abcDEF123_-#ghiJKL456")
+    assert cx.colar_codigo("abcDEF123_-#ghiJKL456") == conectar.FORA
+
+
+FIXTURES = pathlib.Path(__file__).parent / "fixtures" / "claude"
+LINK2 = LINK.replace("state=xyz", "state=novo")
+TELA_LINK2 = f"Browser didn't open? Use the url below to sign in\r\n\r\n{LINK2}\r\n"
+CODIGO = "abcdefghijklmnopqrstuvwxyz0123456789#estadoinventado123"
+
+
+@pytest.mark.parametrize("sistema", ["mac", "windows"])
+def test_acha_a_recusa_na_saida_real_do_claude(sistema):
+    bruto = (FIXTURES / f"recusa_{sistema}.txt").read_text(encoding="utf-8")
+    linha = conectar.linha_de_recusa(conectar.limpar_tela(bruto))
+    assert linha.startswith("OAuth error: That code wasn't accepted.")
+    assert "ado123" not in linha  # o eco mascarado do código não entra
+    assert conectar.linha_de_recusa("Paste code here if prompted >") is None
+
+
+class TerminaisEmSequencia:
+    """Cada `abrir` devolve o próximo terminal falso (a reabertura depois da recusa)."""
+
+    def __init__(self, *terminais):
+        self.terminais = list(terminais)
+        self.abertos = []
+
+    def __call__(self, argv, env, cwd):
+        t = self.terminais.pop(0)
+        self.abertos.append(t)
+        return t
+
+
+def _conexao_seq(seq, validar=True):
+    relogio = Relogio()
+    return conectar.Conexao(
+        abrir=seq, instalar=lambda: True, validar=lambda acesso, casa, tempo: validar,
+        guardar=lambda acesso: None, localizar=lambda: "/bin/claude",
+        relogio=relogio, dormir=relogio.dormir)
+
+
+def _recusa():
+    return (FIXTURES / "recusa_mac.txt").read_text(encoding="utf-8")
+
+
+def test_codigo_recusado_abre_autorizacao_nova_e_avisa():
+    primeiro = TerminalFalso([TELA_INICIAL] + [""] * 3 + [_recusa()] + [""] * 50)
+    segundo = TerminalFalso([TELA_LINK2] + [""] * 3 + [TELA_FINAL])
+    seq = TerminaisEmSequencia(primeiro, segundo)
+    cx = _conexao_seq(seq)
+    vistos = []
+    dormir = cx._dormir
+
+    def dormir_e_colar(s):
+        e = cx.estado()
+        vistos.append(e)
+        if e["etapa"] == conectar.AUTORIZAR and e["link"] == LINK and not e["conferindo"]:
+            assert cx.colar_codigo(CODIGO) == conectar.COLADO
+        dormir(s)
+    cx._dormir = dormir_e_colar
+    cx.iniciar(em_thread=False)
+
+    assert primeiro.encerrado and len(seq.abertos) == 2
+    assert any(e["conferindo"] and e["mensagem"] == conectar.MENSAGEM_CONFERINDO for e in vistos)
+    novos = [e for e in vistos if e["link"] == LINK2]
+    assert novos and novos[0]["mensagem"] == conectar.MENSAGEM_RECUSADO
+    assert novos[0]["recusas"] == 1 and not novos[0]["conferindo"]
+    assert cx.estado()["etapa"] == conectar.PRONTO
+    texto = "\n".join(cx.diagnostico())
+    assert "OAuth error" in texto and CODIGO not in texto and "ado123" not in texto
+    assert "state=" not in texto
+
+
+def test_tres_recusas_param_com_erro():
+    terminais = [TerminalFalso([TELA_INICIAL] + [""] * 3 + [_recusa()] + [""] * 50)
+                 for _ in range(3)]
+    seq = TerminaisEmSequencia(*terminais)
+    cx = _conexao_seq(seq)
+    dormir = cx._dormir
+
+    def dormir_e_colar(s):
+        e = cx.estado()
+        if e["etapa"] == conectar.AUTORIZAR and e["link"] and not e["conferindo"]:
+            cx.colar_codigo(CODIGO)
+        dormir(s)
+    cx._dormir = dormir_e_colar
+    cx.iniciar(em_thread=False)
+    estado = cx.estado()
+    assert estado["etapa"] == conectar.ERRO and estado["recusas"] == 3
+    assert estado["mensagem"] == conectar.MENSAGEM_TRES_RECUSAS
+    assert len(seq.abertos) == 3 and all(t.encerrado for t in terminais)
+
+
+def test_sem_resposta_em_60s_volta_a_pedir_o_codigo():
+    terminal = TerminalFalso([TELA_INICIAL] + [""] * 400)
+    cx = _conexao(terminal)
+    vistos = []
+    dormir = cx._dormir
+
+    def dormir_e_colar(s):
+        e = cx.estado()
+        vistos.append(e)
+        if e["etapa"] == conectar.AUTORIZAR and not any(v["conferindo"] for v in vistos):
+            cx.colar_codigo(CODIGO)
+        if cx._relogio() > conectar.TEMPO_CONFERIR_S + 5:
+            cx.cancelar()
+        dormir(s)
+    cx._dormir = dormir_e_colar
+    cx.iniciar(em_thread=False)
+    sem_resposta = [e for e in vistos if e["mensagem"] == conectar.MENSAGEM_SEM_RESPOSTA]
+    assert sem_resposta and not sem_resposta[0]["conferindo"]
+    assert sem_resposta[0]["etapa"] == conectar.AUTORIZAR
+
+
+def test_colar_codigo_diz_o_que_houve():
+    terminal = TerminalFalso([TELA_INICIAL])
+    cx = _conexao(terminal)
+    assert cx.colar_codigo(CODIGO) == conectar.FORA  # nenhuma autorização aberta
+    cx._etapa, cx._terminal = conectar.AUTORIZAR, terminal
+    assert cx.colar_codigo("curto") == conectar.FORMATO
+    assert cx.colar_codigo(CODIGO) == conectar.COLADO
+    assert terminal.escrito == [CODIGO + "\r"]
+    assert cx.colar_codigo(CODIGO) == conectar.JA_CONFERINDO
+    assert cx.estado()["conferindo"] is True
+
+
+def test_sem_segredos():
+    linha = (f"x sk-ant-oat01-{'A' * 60} {LINK} {CODIGO} "
+             "*************************************************ado123 OAuth error")
+    limpo = conectar.sem_segredos(linha)
+    assert "sk-ant" not in limpo and "state=" not in limpo and "client_id" not in limpo
+    assert CODIGO not in limpo and "ado123" not in limpo
+    assert "https://claude.com/cai/oauth/authorize?…" in limpo and "OAuth error" in limpo
 
 
 def test_sem_claude_instala_antes():
@@ -248,18 +382,61 @@ def test_botao_inicia_e_estado_em_json(c, monkeypatch):
     r = c.get("/configuracoes/lex/conectar/estado")
     assert r.status_code == 200 and r.headers["Cache-Control"] == "no-store"
     assert r.get_json() == {"etapa": "autorizar", "mensagem": conectar.MENSAGENS["autorizar"],
-                            "link": LINK, "andamento": True}
+                            "link": LINK, "conferindo": False, "recusas": 0,
+                            "andamento": True}
     html = c.get("/configuracoes/lex").get_data(as_text=True)
     assert 'data-andamento="1"' in html and LINK.replace("&", "&amp;") in html
 
 
-def test_rota_do_codigo(c):
+def test_rota_do_codigo_explica_cada_caso(c):
+    r = c.post("/configuracoes/lex/conectar/codigo", data={"codigo": "abcDEF123_-#ghi"})
+    assert r.status_code == 409 and "A autorização já terminou" in r.get_json()["mensagem"]
     terminal = TerminalFalso([])
     c.cx._etapa, c.cx._terminal = conectar.AUTORIZAR, terminal
-    r = c.post("/configuracoes/lex/conectar/codigo", data={"codigo": "abcDEF123_-#ghi"})
-    assert r.get_json() == {"ok": True} and terminal.escrito == ["abcDEF123_-#ghi\r"]
     r = c.post("/configuracoes/lex/conectar/codigo", data={"codigo": "x"})
-    assert r.status_code == 400 and r.get_json()["ok"] is False
+    assert r.status_code == 400 and "não parece o código" in r.get_json()["mensagem"]
+    r = c.post("/configuracoes/lex/conectar/codigo", data={"codigo": "abcDEF123_-#ghi"})
+    assert r.get_json() == {"ok": True}
+    r = c.post("/configuracoes/lex/conectar/codigo", data={"codigo": "abcDEF123_-#ghi"})
+    assert r.status_code == 409 and "Já estamos conferindo" in r.get_json()["mensagem"]
+
+
+def test_tela_tem_copiar_link_ajuda_e_diagnostico(c):
+    c.cx._etapa, c.cx._link = conectar.AUTORIZAR, LINK
+    html = c.get("/configuracoes/lex").get_data(as_text=True)
+    assert "Copiar o link" in html and 'class="btn btn-secundario conectar-copiar"' in html
+    assert "Não foi possível verificar seu navegador" in html
+    assert "desligue VPN e bloqueadores" in html
+    assert "Copiar diagnóstico" in html and "/configuracoes/lex/diagnostico" in html
+    assert "Use só a aba mais recente" in html
+    assert 'id="diagnostico-texto"' in html and "Selecione o texto abaixo e copie" in html
+    # link novo (outra autorização): o botão volta a "Copiar o link"
+    assert "botaoLink.textContent = 'Copiar o link'" in html
+
+
+def test_diagnostico_sem_segredos(c, monkeypatch):
+    monkeypatch.setattr(conectar, "versao_claude", lambda rodar=None: "2.1.312 (Claude Code)")
+    c.cx._registrar(f"autorizar: link {LINK}")
+    c.cx._linhas = [conectar.sem_segredos("OAuth error: That code wasn't accepted.")]
+    c.cx.registrar_teste("recusado")
+    r = c.get("/configuracoes/lex/diagnostico")
+    assert r.status_code == 200 and r.headers["Cache-Control"] == "no-store"
+    texto = r.get_json()["texto"]
+    for trecho in ("Controladoria:", "Claude Code: 2.1.312", "Sistema:", "recusado",
+                   "claude: OAuth error"):
+        assert trecho in texto
+    assert "state=" not in texto and "client_id" not in texto and ACESSO not in texto
+
+
+def test_versao_claude(monkeypatch):
+    import subprocess as sp
+    monkeypatch.setattr(executor, "_executavel", lambda env: "claude")
+    ok = lambda argv, **kw: sp.CompletedProcess(argv, 0, stdout="2.1.312 (Claude Code)\n")
+    assert conectar.versao_claude(rodar=ok) == "2.1.312 (Claude Code)"
+
+    def falha(argv, **kw):
+        raise FileNotFoundError
+    assert conectar.versao_claude(rodar=falha) == ""
 
 
 def test_tela_sem_pasta_da_banca(c, monkeypatch, tmp_path):

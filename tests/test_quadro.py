@@ -89,7 +89,7 @@ def test_movimentos_fora_da_tabela_sao_recusados(conn):
     quadro.adicionar_item(conn, A, "publicacao", "10", "2026-10-03")
     with pytest.raises(quadro.MovimentoInvalido) as erro:
         quadro.mover(conn, 1, "autos", "advogado")      # pular coluna
-    assert str(erro.value) == "Não dá para mover de “Chegou do PJe” para “Autos baixados”."
+    assert str(erro.value) == "Não dá para mover de “Chegou” para “Autos baixados”."
     quadro.mover(conn, 1, "acao", "advogado")
     with pytest.raises(quadro.MovimentoInvalido):
         quadro.mover(conn, 1, "autos", "advogado")      # só o trabalhador

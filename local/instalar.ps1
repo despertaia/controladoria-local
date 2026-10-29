@@ -2,10 +2,12 @@
 # Pode rodar quantas vezes quiser: na segunda vez, atualiza o codigo e mantem os dados.
 #
 #   powershell -ExecutionPolicy Bypass -c "irm https://raw.githubusercontent.com/despertaia/controladoria-local/main/local/instalar.ps1 | iex"
-#   powershell -ExecutionPolicy Bypass -File local\instalar.ps1 [-Destino PASTA] [-Url ZIP] [-Origem PASTA] [-SemInicioAutomatico]
+#   powershell -ExecutionPolicy Bypass -File local\instalar.ps1 [-Destino PASTA] [-Url ZIP] [-Origem PASTA] [-SemInicioAutomatico] [-SoConferir]
 #
 # -Origem instala a partir de uma pasta local (CI e testes), sem baixar nada.
 # -SemInicioAutomatico nao cria o inicio automatico nem inicia (CI).
+# -SoConferir so lista o que voce mudou no codigo instalado; nao muda nada. No "irm | iex",
+# use a variavel CONTROLADORIA_SO_CONFERIR=1.
 # Via "irm | iex" os parametros podem vir das variaveis CONTROLADORIA_DESTINO e CONTROLADORIA_URL.
 #
 # Compativel com o Windows PowerShell 5.1. O arquivo e todo ASCII de proposito: com BOM o
@@ -15,7 +17,8 @@ param(
     [string]$Destino = '',
     [string]$Url = '',
     [string]$Origem = '',
-    [switch]$SemInicioAutomatico
+    [switch]$SemInicioAutomatico,
+    [switch]$SoConferir
 )
 
 $ErrorActionPreference = 'Stop'
@@ -146,7 +149,28 @@ function Write-Versao([string]$Antiga, [string]$Nova) {
     }
 }
 
-function Install-Controladoria([string]$Destino, [string]$Url, [string]$Origem, [bool]$InicioAutomatico) {
+# Ultimas linhas do instalador: o que foi guardado das melhorias do mentorado.
+function Write-Guardado([string]$Guardado) {
+    if (-not $Guardado) { return }
+    Diga $Guardado
+    Diga (T 'Para refazer na vers\u00e3o nova, pe\u00e7a ao Claude: \u00abReaplique as melhorias guardadas da Controladoria do Lex Lab\u00bb.')
+}
+
+# Sem o Python da instalacao antiga: copia todo o codigo que vai ser trocado.
+function Save-TudoAntigo([string]$Fonte, [string]$DestAbs, [string]$VersaoAntiga, [string[]]$Preservar) {
+    $versao = $VersaoAntiga
+    if (-not $versao) { $versao = 'desconhecida' }
+    $copia = Join-Path $DestAbs ('melhorias-guardadas\' + (Get-Date -Format 'yyyy-MM-dd') + '-tudo-v' + $versao)
+    New-Item -ItemType Directory -Path $copia -Force | Out-Null
+    foreach ($item in (Get-ChildItem -LiteralPath $Fonte -Force)) {
+        if ($Preservar -contains $item.Name) { continue }
+        $atual = Join-Path $DestAbs $item.Name
+        if (Test-Path -LiteralPath $atual) { Copy-Item -LiteralPath $atual -Destination (Join-Path $copia $item.Name) -Recurse -Force }
+    }
+    return ((T 'N\u00e3o deu para comparar o c\u00f3digo; guardei uma c\u00f3pia de todo o c\u00f3digo antigo em {0}') -f $copia)
+}
+
+function Install-Controladoria([string]$Destino, [string]$Url, [string]$Origem, [bool]$InicioAutomatico, [bool]$SoConferir) {
     $script:Passo = T 'preparar'
     if ($env:OS -ne 'Windows_NT') { throw (T 'Este instalador \u00e9 para Windows. No Mac, use o instalar.sh.') }
     try { [Console]::OutputEncoding = [Text.Encoding]::UTF8 } catch { }
@@ -190,6 +214,24 @@ function Install-Controladoria([string]$Destino, [string]$Url, [string]$Origem, 
     # Versao: a que ja estava instalada (se houver) e a que vai entrar.
     $versaoAntiga = Get-VersaoDe $Destino
     $versaoNova = Get-VersaoDe $fonte
+    $melhorias = Join-Path $fonte 'local\melhorias.py'
+    $script:Guardado = ''
+
+    # So conferir: lista o que o mentorado mudou no codigo instalado e sai sem mudar nada.
+    if ($SoConferir) {
+        $script:Passo = T 'conferir as suas altera\u00e7\u00f5es'
+        $pyAntigo = Join-Path $Destino '.venv\Scripts\python.exe'
+        if (-not (Test-Path -LiteralPath (Join-Path $Destino 'local\iniciar.py'))) {
+            Diga ((T 'A Controladoria ainda n\u00e3o est\u00e1 instalada em {0}.') -f $Destino)
+        } elseif (Test-Path -LiteralPath $pyAntigo) {
+            $r = Get-SaidaNativa $pyAntigo @('-I', $melhorias, 'conferir', $Destino, $fonte)
+            Diga ([string]$r.Saida)
+        } else {
+            Diga (T 'N\u00e3o consegui conferir: o Python da instala\u00e7\u00e3o n\u00e3o foi encontrado. Na atualiza\u00e7\u00e3o, guardo uma c\u00f3pia de todo o c\u00f3digo antigo.')
+        }
+        Remove-Item -LiteralPath $tmp -Recurse -Force -ErrorAction SilentlyContinue
+        return
+    }
 
     # 2) Para a versao em uso antes de trocar o codigo (atualizacao).
     $script:Passo = T 'parar a vers\u00e3o em uso'
@@ -199,7 +241,17 @@ function Install-Controladoria([string]$Destino, [string]$Url, [string]$Origem, 
     $script:Passo = T 'copiar os arquivos'
     New-Item -ItemType Directory -Path $Destino -Force | Out-Null
     $destAbs = (Resolve-Path -LiteralPath $Destino).Path
-    $preservar = @('dados', 'peticoes', 'cache', 'grupos', '.venv', '.env', '.git', '.pytest_cache', '__pycache__')
+    $preservar = @('dados', 'peticoes', 'cache', 'grupos', '.venv', '.env', '.git', '.pytest_cache', '__pycache__', 'melhorias-guardadas')
+    # Antes de trocar o codigo: guarda o que o mentorado mudou nele (local\melhorias.py).
+    if ($fonte.TrimEnd('\') -ne $destAbs.TrimEnd('\') -and (Test-Path -LiteralPath (Join-Path $destAbs 'local\iniciar.py'))) {
+        $script:Passo = T 'guardar as suas altera\u00e7\u00f5es'
+        $pyAntigo = Join-Path $destAbs '.venv\Scripts\python.exe'
+        $r = @{ Codigo = 1; Saida = '' }
+        if (Test-Path -LiteralPath $pyAntigo) { $r = Get-SaidaNativa $pyAntigo @('-I', $melhorias, 'guardar', $destAbs, $fonte) }
+        if ($r.Codigo -eq 0) { $script:Guardado = ([string]$r.Saida).Trim() }
+        else { $script:Guardado = Save-TudoAntigo $fonte $destAbs $versaoAntiga $preservar }
+        $script:Passo = T 'copiar os arquivos'
+    }
     if ($fonte.TrimEnd('\') -ne $destAbs.TrimEnd('\')) {
         foreach ($item in (Get-ChildItem -LiteralPath $fonte -Force)) {
             if ($preservar -contains $item.Name) { continue }
@@ -293,6 +345,7 @@ function Install-Controladoria([string]$Destino, [string]$Url, [string]$Origem, 
         Diga (T 'Instalada sem in\u00edcio autom\u00e1tico. Para iniciar:')
         Diga ('  cd "{0}"; .venv\Scripts\python.exe -m local.iniciar --abrir' -f $destAbs)
         Write-Versao $versaoAntiga $versaoNova
+        Write-Guardado $script:Guardado
         return
     }
 
@@ -321,22 +374,27 @@ function Install-Controladoria([string]$Destino, [string]$Url, [string]$Origem, 
         Diga (T 'AVISO: a Controladoria foi instalada, mas ainda est\u00e1 iniciando.')
         Diga ((T 'Espere 2 minutos e abra o atalho Controladoria. Registro: {0}') -f (Join-Path $destAbs 'dados\controladoria.log'))
         Write-Versao $versaoAntiga $versaoNova
+        Write-Guardado $script:Guardado
         return
     }
     Diga ''
     Diga ((T 'Pronto! A Controladoria est\u00e1 rodando em: {0}') -f $urlPainel)
     Diga (T 'Abra esse endere\u00e7o no navegador (ou o atalho Controladoria na \u00c1rea de Trabalho).')
     Write-Versao $versaoAntiga $versaoNova
+    Write-Guardado $script:Guardado
     try { Start-Process $urlPainel } catch { }
 }
 
 $script:Passo = T 'preparar'
+# O aviso do que foi guardado (local\melhorias.py): sai no fim e tambem quando a instalacao falha.
+$script:Guardado = ''
 try {
-    Install-Controladoria $Destino $Url $Origem (-not $SemInicioAutomatico)
+    Install-Controladoria $Destino $Url $Origem (-not $SemInicioAutomatico) ([bool]($SoConferir.IsPresent -or $env:CONTROLADORIA_SO_CONFERIR -eq '1'))
 } catch {
     Write-Host ''
     Write-Host ((T 'ERRO: a instala\u00e7\u00e3o parou na etapa "{0}". Nada dos seus dados foi apagado.') -f $script:Passo) -ForegroundColor Red
     Write-Host ((T 'Detalhe: {0}') -f $_.Exception.Message) -ForegroundColor Red
     Write-Host (T 'Se precisar de ajuda, copie as mensagens acima.')
+    Write-Guardado $script:Guardado
     exit 1
 }

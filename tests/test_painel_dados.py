@@ -287,7 +287,7 @@ def test_quadro_monta_colunas_e_cartao():
     assert [col["chave"] for col in q["colunas"]] == ["chegou", "acao", "autos", "lex", "revisao"]
     cartao = q["colunas"][0]["cartoes"][0]
     assert cartao["cliente"] == "MARIA" and cartao["parte_contraria"] == "BANCO"
-    assert cartao["origem"] == "DJEN + PJe" and cartao["n_itens"] == 2
+    assert cartao["origem"] == "Diário + PJe" and cartao["n_itens"] == 2
     assert cartao["data_br"] == "04/10/2026" and cartao["chegou_ha"] == "há 2 dias"
     assert cartao["trecho"] == "Fica a parte intimada."
     assert q["na_triagem"] == 1 and q["versao"] == pd.versao(c) > 0

@@ -48,11 +48,12 @@ def _conferir(servico: str, valor: str | None = None) -> None:
         raise ValueError("valor ou serviço com caracteres não permitidos")
 
 
-def ler(servico: str, rodar=subprocess.run) -> str | None:
-    """O segredo guardado em `servico`, ou None se não houver (ou o cofre recusar)."""
+def ler(servico: str, rodar=subprocess.run, estrito: bool = False) -> str | None:
+    """O segredo guardado em `servico`, ou None se não houver (ou o cofre recusar). No modo
+    local, `estrito` faz o cofre que não abre levantar RuntimeError em vez de None."""
     if modo_local():
         from nucleo import cofre
-        return (cofre.ler(_nome_local(servico)) or "").strip() or None
+        return (cofre.ler(_nome_local(servico), estrito=estrito) or "").strip() or None
     try:
         r = rodar(["security", "find-generic-password", "-s", servico, "-w"],
                   capture_output=True, text=True, timeout=30)

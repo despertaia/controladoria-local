@@ -819,7 +819,7 @@ def _cartao(conn: sqlite3.Connection, d, hoje: date, agora: datetime | None = No
     origens = []
     for tipo in ("publicacao", "aviso"):
         if any(i["tipo"] == tipo for i in itens):
-            origens.append("DJEN" if tipo == "publicacao" else "PJe")
+            origens.append("Diário" if tipo == "publicacao" else "PJe")
     trecho = ""
     for item in itens:  # a novidade mais recente que tiver texto
         if item["tipo"] == "publicacao":
@@ -851,7 +851,7 @@ def _cartao(conn: sqlite3.Connection, d, hoje: date, agora: datetime | None = No
                          if d["lex_squad"] or d["lex_squad_nome"] else ""),
         "id": d["id"], "numero": d["numero"], "numero_formatado": formatar_numero_cnj(d["numero"]),
         "cliente": d["cliente"] or "", "parte_contraria": d["parte_contraria"] or "",
-        "orgao": d["orgao_julgador"] or "", "origem": " + ".join(origens) or "DJEN",
+        "orgao": d["orgao_julgador"] or "", "origem": " + ".join(origens) or "Diário",
         "data_br": data_br(d["referencia_em"]), "chegou_ha": chegou_ha(d["referencia_em"], hoje),
         "trecho": trecho, "n_itens": len(itens), "coluna": d["coluna"],
         "partes_publicadas": ([] if d["cliente"] or d["parte_contraria"]

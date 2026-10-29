@@ -49,6 +49,13 @@ _SINAIS_DE_ACESSO = re.compile(
     r"(?i)\bauthentication_error\b|\binvalid[ _]api[ _]key\b|\boauth token\b"
     r"|please run /login\b"
     r"|\b(?:api error|status|http|erro|error)\W{0,3}401\b|\b401\W{0,3}unauthori")
+# A sonda do "Testar acesso" separa os dois casos que o _SINAIS_DE_ACESSO junta:
+# recusa de verdade (401: acesso vencido, revogado ou inválido) e falta de login.
+_ACESSO_RECUSADO = re.compile(
+    r"(?i)\bauthentication_error\b|\binvalid[ _]api[ _]key\b|\boauth token\b"
+    r"|\b(?:api error|status|http|erro|error)\W{0,3}401\b|\b401\W{0,3}unauthori")
+_SEM_LOGIN = re.compile(r"(?i)\bnot logged in\b|please run /login\b")
+OK, RECUSADO, SEM_LOGIN, INDEFINIDO = "ok", "recusado", "sem_login", "indefinido"
 DETALHE_LIMITE = "pausado: limite do plano"
 DETALHE_ACESSO = "o acesso ao plano do Lex no Mac foi recusado"  # vai à tela (histórico)
 DETALHE_SEM_CLAUDE = "o Claude Code não foi encontrado neste computador"
@@ -890,11 +897,11 @@ def hora_do_limite(texto: str, agora: float | None = None) -> float | None:
     return alvo.timestamp()
 
 
-def validar_acesso(token: str | None, casa: Path, rodar=subprocess.run,
-                   tempo: int = 300) -> bool | None:
-    """Confere o acesso do Claude com um pedido mínimo: True (aceito), False (recusado) ou
-    None (não deu para saber: sem rede, sem `claude`, tempo esgotado...). Sem token, vale
-    o login normal do usuário."""
+def _sondar(token: str | None, casa: Path, rodar=subprocess.run,
+            tempo: int = 300) -> tuple[str, str]:
+    """Roda o pedido mínimo ao Claude uma única vez e devolve (classe, texto), com a classe
+    OK, RECUSADO, SEM_LOGIN ou INDEFINIDO e o texto (stdout + stderr) em que ela se baseou.
+    Sem token, vale o login normal do usuário."""
     env = ambiente(token)
     opcoes = ({"creationflags": CREATE_NO_WINDOW} if no_windows() else {})
     try:
@@ -903,14 +910,37 @@ def validar_acesso(token: str | None, casa: Path, rodar=subprocess.run,
                   capture_output=True, text=True, encoding="utf-8", errors="replace",
                   timeout=tempo, **opcoes)
     except (OSError, subprocess.SubprocessError):
-        return None
+        return INDEFINIDO, ""
     try:
         dados = json.loads(r.stdout or "")
     except ValueError:
         dados = None
+    texto = f"{r.stdout or ''}\n{r.stderr or ''}"
     if r.returncode == 0 and isinstance(dados, dict) and dados.get("is_error") is False:
+        return OK, texto
+    if _ACESSO_RECUSADO.search(texto):
+        return RECUSADO, texto
+    if _SEM_LOGIN.search(texto):
+        return SEM_LOGIN, texto
+    return INDEFINIDO, texto
+
+
+def classificar_acesso(token: str | None, casa: Path, rodar=subprocess.run,
+                       tempo: int = 300) -> str:
+    """Confere o acesso do Claude com um pedido mínimo: OK, RECUSADO (401), SEM_LOGIN
+    (nem acesso nem login) ou INDEFINIDO (sem rede, sem `claude`, tempo esgotado...)."""
+    return _sondar(token, casa, rodar=rodar, tempo=tempo)[0]
+
+
+def validar_acesso(token: str | None, casa: Path, rodar=subprocess.run,
+                   tempo: int = 300) -> bool | None:
+    """True (aceito), False (recusado) ou None (não deu para saber: sem rede, sem `claude`,
+    tempo esgotado...). A decisão é a de sempre, a da ponte: só `parece_erro_de_acesso`
+    vira False; "sem login" sem o pedido de /login continua None."""
+    classe, texto = _sondar(token, casa, rodar=rodar, tempo=tempo)
+    if classe == OK:
         return True
-    if parece_erro_de_acesso(f"{r.stdout or ''}\n{r.stderr or ''}"):
+    if parece_erro_de_acesso(texto):
         return False
     return None
 

@@ -34,6 +34,8 @@ TEMPO_LINK_S = 90          # o `claude setup-token` mostra o link em segundos
 TEMPO_AUTORIZAR_S = 900    # o advogado tem 15 minutos para autorizar
 TEMPO_TESTE_S = 120
 COLUNAS = 1000             # terminal largo: o link e o acesso não quebram de linha
+TEMPO_CONFERIR_S = 60      # depois de colar, a Anthropic responde em segundos
+MAX_RECUSAS = 3
 
 INSTALADOR_WINDOWS = "irm https://claude.ai/install.ps1 | iex"
 INSTALADOR_MAC = "curl -fsSL https://claude.ai/install.sh | bash"
@@ -41,6 +43,11 @@ INSTALADOR_MAC = "curl -fsSL https://claude.ai/install.sh | bash"
 _ACESSO = re.compile(r"sk-ant-oat01-[A-Za-z0-9_-]{20,500}")
 _LINK = re.compile(r"https://\S+/oauth/authorize\?\S+")
 _CODIGO_COLADO = re.compile(r"[A-Za-z0-9_#.-]{10,600}")
+_RECUSA = re.compile(r"(?i)OAuth error|wasn't accepted|was not accepted")
+# Para o diagnóstico: a parte do link depois do "?", o acesso e qualquer sequência longa
+# (o código colado, o eco mascarado dele) nunca saem daqui.
+_QUERY = re.compile(r"(https?://[^\s?]+)\?\S*")
+_LONGO = re.compile(r"[A-Za-z0-9_#.*-]{20,}")
 # Sequências do terminal: as de "avançar o cursor" viram espaço (o Ink usa no lugar de
 # espaços), as demais somem.
 _AVANCO = re.compile(r"\x1b\[\d*C")
@@ -55,10 +62,27 @@ MENSAGENS = {
                 "(leva de 1 a 3 minutos)…",
     ABRINDO: "Preparando a autorização…",
     AUTORIZAR: "Abrimos uma aba no navegador: entre na sua conta Claude e clique em "
-               "Autorizar. Depois volte para esta página.",
+               "Autorizar. Use só a aba mais recente (feche as antigas) e depois volte "
+               "para esta página.",
     TESTANDO: "Autorizado. Guardando o acesso e testando (até 2 minutos)…",
     PRONTO: "Pronto: o Lex está ligado ao seu plano do Claude.",
 }
+
+# O que o colar_codigo responde à tela.
+COLADO, FORMATO, FORA, JA_CONFERINDO = "colado", "formato", "fora", "conferindo"
+
+MENSAGEM_CONFERINDO = "Código enviado. Conferindo com a Anthropic…"
+MENSAGEM_RECUSADO = ("A Anthropic não aceitou esse código. Isso acontece quando ele é de "
+                     "uma aba antiga ou ficou incompleto. Feche as abas de autorização "
+                     "abertas e use só esta, que acabamos de abrir.")
+MENSAGEM_REABRINDO = "A Anthropic não aceitou esse código. Abrindo uma autorização nova…"
+MENSAGEM_SEM_RESPOSTA = ("A Anthropic não respondeu ao código em 1 minuto. Confira se "
+                         "copiou o código inteiro e envie de novo; se repetir, clique em "
+                         "Cancelar e em Conectar o Lex de novo.")
+MENSAGEM_TRES_RECUSAS = ("A Anthropic recusou o código 3 vezes seguidas. Feche todas as "
+                         "abas de autorização, clique em Conectar o Lex de novo e use só a "
+                         "aba nova. Se repetir, clique em Copiar diagnóstico e cole no "
+                         "grupo da mentoria.")
 
 
 def limpar_tela(bruto: str) -> str:
@@ -82,6 +106,23 @@ def codigo_colado_valido(bruto: str) -> str | None:
     """O código que a página da Anthropic mostra (sem espaços), ou None."""
     codigo = "".join(str(bruto or "").split())
     return codigo if _CODIGO_COLADO.fullmatch(codigo) else None
+
+
+def linha_de_recusa(texto: str) -> str | None:
+    """A linha em que o `claude setup-token` diz que a Anthropic não aceitou o código."""
+    for linha in texto.splitlines():
+        if _RECUSA.search(linha):
+            return sem_segredos(linha)
+    return None
+
+
+def sem_segredos(linha: str) -> str:
+    """Uma linha para o diagnóstico: sem acesso, sem código e sem a parte do link
+    depois do "?"."""
+    linha = _QUERY.sub(r"\1?…", str(linha or ""))
+    linha = _ACESSO.sub("[oculto]", linha)
+    linha = _LONGO.sub("[oculto]", linha)
+    return " ".join(linha.split())[:300]
 
 
 # --- o terminal invisível ----------------------------------------------------------------
@@ -226,13 +267,23 @@ class Conexao:
         self._terminal: _Terminal | None = None
         self._cancelar = threading.Event()
         self._thread: threading.Thread | None = None
+        self._conferindo_desde: float | None = None
+        self._marca = 0              # tamanho da saída quando o último código foi enviado
+        self._recusas = 0
+        self._eventos: list[str] = []  # para o "Copiar diagnóstico"
+        self._linhas: list[str] = []   # mensagens de erro do claude, sem segredos
+        self._teste = ""
 
     # -- leitura pela tela --
     def estado(self) -> dict:
         with self._trava:
             etapa = self._etapa
-            return {"etapa": etapa, "mensagem": self._mensagem or MENSAGENS.get(etapa, ""),
+            conferindo = etapa == AUTORIZAR and self._conferindo_desde is not None
+            mensagem = (MENSAGEM_CONFERINDO if conferindo
+                        else self._mensagem or MENSAGENS.get(etapa, ""))
+            return {"etapa": etapa, "mensagem": mensagem,
                     "link": self._link if etapa == AUTORIZAR else None,
+                    "conferindo": conferindo, "recusas": self._recusas,
                     "andamento": etapa in (INSTALANDO, ABRINDO, AUTORIZAR, TESTANDO)}
 
     def em_andamento(self) -> bool:
@@ -241,7 +292,27 @@ class Conexao:
     def _mudar(self, etapa: str, mensagem: str = "", link: str | None = None) -> None:
         with self._trava:
             self._etapa, self._mensagem, self._link = etapa, mensagem, link
-        log.info("conectar o Lex: %s", etapa)
+            self._conferindo_desde = None
+        self._registrar(f"{etapa}: {mensagem or MENSAGENS.get(etapa, '')}")
+
+    def _registrar(self, texto: str) -> None:
+        linha = f"{time.strftime('%H:%M:%S')} {sem_segredos(texto)}"
+        with self._trava:
+            self._eventos = (self._eventos + [linha])[-40:]
+        log.info("conectar o Lex: %s", linha)
+
+    def diagnostico(self) -> list[str]:
+        with self._trava:
+            return [*self._eventos, *(f"claude: {l}" for l in self._linhas)]
+
+    def registrar_teste(self, resultado: str) -> None:
+        with self._trava:
+            self._teste = f"{time.strftime('%d/%m %H:%M')} {resultado}"
+        log.info("testar o acesso do Lex: %s", resultado)
+
+    def ultimo_teste(self) -> str:
+        with self._trava:
+            return self._teste
 
     # -- ações da tela --
     def iniciar(self, *, em_thread: bool = True) -> bool:
@@ -250,6 +321,8 @@ class Conexao:
             if self._etapa in (INSTALANDO, ABRINDO, AUTORIZAR, TESTANDO):
                 return False
             self._etapa, self._mensagem, self._link = ABRINDO, "", None
+            self._recusas, self._eventos, self._linhas = 0, [], []
+            self._conferindo_desde = None
         self._cancelar.clear()
         if em_thread:
             self._thread = threading.Thread(target=self._rodar, name="conectar-lex",
@@ -259,15 +332,24 @@ class Conexao:
             self._rodar()
         return True
 
-    def colar_codigo(self, bruto: str) -> bool:
-        """Manda ao `claude setup-token` o código que a página da Anthropic mostrou."""
+    def colar_codigo(self, bruto: str) -> str:
+        """Manda ao `claude setup-token` o código que a página da Anthropic mostrou.
+        Responde COLADO, FORMATO, FORA (nenhuma autorização esperando código) ou
+        JA_CONFERINDO (outro código ainda está sendo conferido)."""
         codigo = codigo_colado_valido(bruto)
         with self._trava:
             terminal = self._terminal if self._etapa == AUTORIZAR else None
-        if not codigo or terminal is None:
-            return False
+            if terminal is None:
+                return FORA
+            if not codigo:
+                return FORMATO
+            if self._conferindo_desde is not None:
+                return JA_CONFERINDO
+            self._marca = len(limpar_tela(terminal.texto()))
+            self._conferindo_desde = self._relogio()
         terminal.escrever(codigo + "\r")
-        return True
+        self._registrar("código enviado; conferindo")
+        return COLADO
 
     def cancelar(self) -> None:
         self._cancelar.set()
@@ -290,6 +372,17 @@ class Conexao:
             if terminal is not None:
                 terminal.encerrar()
 
+    def _abrir_autorizacao(self, exe: str) -> _Terminal:
+        env = executor.ambiente(None)  # sem acesso antigo: o setup-token gera um novo
+        env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+        terminal = self._abrir([exe, "setup-token"], env, str(Path.home()))
+        with self._trava:
+            antigo, self._terminal = self._terminal, terminal
+            self._conferindo_desde, self._marca = None, 0
+        if antigo is not None:
+            antigo.encerrar()
+        return terminal
+
     def _conectar(self) -> None:
         exe = self._localizar()
         if not exe:
@@ -300,14 +393,10 @@ class Conexao:
                                   "de linha de comando».")
                 return
         self._mudar(ABRINDO)
-        env = executor.ambiente(None)  # sem acesso antigo: o setup-token gera um novo
-        env.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
-        terminal = self._abrir([exe, "setup-token"], env, str(Path.home()))
-        with self._trava:
-            self._terminal = terminal
+        terminal = self._abrir_autorizacao(exe)
 
         inicio = self._relogio()
-        link = None
+        link, mensagem_link = None, ""
         while True:
             if self._cancelar.is_set():
                 self._mudar(ERRO, "Conexão cancelada.")
@@ -317,7 +406,28 @@ class Conexao:
             if acesso:
                 break
             if link is None and (link := achar_link(texto)):
-                self._mudar(AUTORIZAR, link=link)
+                self._mudar(AUTORIZAR, mensagem_link, link=link)
+            with self._trava:
+                desde, marca = self._conferindo_desde, self._marca
+            if desde is not None:
+                recusa = linha_de_recusa(texto[marca:])
+                if recusa:
+                    with self._trava:
+                        self._recusas += 1
+                        recusas = self._recusas
+                        self._linhas = (self._linhas + [recusa])[-10:]
+                    if recusas >= MAX_RECUSAS:
+                        self._mudar(ERRO, MENSAGEM_TRES_RECUSAS)
+                        return
+                    self._mudar(ABRINDO, MENSAGEM_REABRINDO)
+                    terminal = self._abrir_autorizacao(exe)
+                    inicio, link, mensagem_link = self._relogio(), None, MENSAGEM_RECUSADO
+                    continue
+                if self._relogio() - desde > TEMPO_CONFERIR_S:
+                    with self._trava:
+                        self._conferindo_desde = None
+                        self._mensagem = MENSAGEM_SEM_RESPOSTA
+                    self._registrar("a Anthropic não respondeu ao código em 60 s")
             passado = self._relogio() - inicio
             if not terminal.vivo():
                 self._mudar(ERRO, "A autorização foi fechada antes de terminar. Clique em "
@@ -372,6 +482,34 @@ def instalar_claude(rodar=subprocess.run) -> bool:
         log.error("instalador do Claude Code terminou com código %s", r.returncode)
         return False
     return True
+
+
+def versao_claude(rodar=subprocess.run) -> str:
+    """A versão do Claude Code deste computador ("2.1.312 (Claude Code)"), ou ""."""
+    env = executor.ambiente(None)
+    opcoes = {"creationflags": executor.CREATE_NO_WINDOW} if executor.no_windows() else {}
+    try:
+        r = rodar([executor._executavel(env), "--version"], env=env,
+                  stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                  encoding="utf-8", errors="replace", timeout=20, **opcoes)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    linhas = (r.stdout or "").strip().splitlines()
+    return linhas[0][:60] if r.returncode == 0 and linhas else ""
+
+
+def texto_diagnostico(cx: "Conexao", *, versao: str, claude: str, sistema: str) -> str:
+    """O texto do "Copiar diagnóstico": versões, sistema, último teste e a última conexão.
+    Nunca o acesso, o código colado ou a parte do link depois do "?"."""
+    eventos = cx.diagnostico()
+    linhas = ["Diagnóstico da conexão do Lex (Controladoria do Lex Lab)",
+              f"Controladoria: {versao or 'desconhecida'}",
+              f"Claude Code: {claude or 'não encontrado'}",
+              f"Sistema: {sistema}",
+              f"Último teste de acesso: {cx.ultimo_teste() or 'nenhum'}",
+              "Última conexão:"]
+    linhas += [f"  {sem_segredos(e)}" for e in eventos] or ["  (nenhuma desde que o painel abriu)"]
+    return "\n".join(linhas)
 
 
 CONEXAO = Conexao()

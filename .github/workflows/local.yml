@@ -105,6 +105,55 @@ jobs:
           esac
           curl -fsS -o /dev/null http://127.0.0.1:5056/configurar
 
+      - name: Atualizar guarda as melhorias do mentorado (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $origem = "$PWD"
+          if (Test-Path scripts\montar_dist.py) {
+            $origem = "$env:RUNNER_TEMP\dist"
+            & .venv\Scripts\python.exe scripts\montar_dist.py $origem
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+          $d = "$env:RUNNER_TEMP\Controladoria3"
+          $saida = powershell -NoProfile -ExecutionPolicy Bypass -File local\instalar.ps1 -Origem $origem -Destino $d -SemInicioAutomatico | Out-String
+          if ($LASTEXITCODE -ne 0) { Write-Host $saida; exit $LASTEXITCODE }
+          Add-Content -LiteralPath "$d\nucleo\quadro.py" -Value "# melhoria do mentorado"
+          Set-Content -LiteralPath "$d\nucleo\minha_melhoria.py" -Value "x = 1"
+          $conf = powershell -NoProfile -ExecutionPolicy Bypass -File local\instalar.ps1 -Origem $origem -Destino $d -SoConferir | Out-String
+          Write-Host $conf
+          if ($conf -notmatch 'nucleo/quadro.py' -or $conf -notmatch 'nucleo/minha_melhoria.py') { Write-Error "o conferir nao listou as melhorias"; exit 1 }
+          if ($conf -notmatch 'Encontrei 2 altera') { Write-Error "o conferir achou alteracoes a mais"; exit 1 }
+          $saida = powershell -NoProfile -ExecutionPolicy Bypass -File local\instalar.ps1 -Origem $origem -Destino $d -SemInicioAutomatico | Out-String
+          $codigo = $LASTEXITCODE
+          Write-Host $saida
+          if ($codigo -ne 0) { exit $codigo }
+          if ($saida -notmatch 'Guardei 2 altera') { Write-Error "nao guardou as melhorias"; exit 1 }
+          $g = Get-ChildItem "$d\melhorias-guardadas" -Directory | Select-Object -First 1
+          if (-not (Test-Path "$($g.FullName)\nucleo\minha_melhoria.py") -or -not (Test-Path "$($g.FullName)\LEIA-ME.txt")) { Write-Error "copia incompleta"; exit 1 }
+
+      - name: Atualizar guarda as melhorias do mentorado (Mac)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          origem="$PWD"
+          if [ -f scripts/montar_dist.py ]; then
+            origem="$RUNNER_TEMP/dist"
+            .venv/bin/python scripts/montar_dist.py "$origem"
+          fi
+          d="$RUNNER_TEMP/Controladoria3"
+          bash local/instalar.sh --origem "$origem" --destino "$d" --sem-inicio-automatico > /dev/null
+          echo "# melhoria do mentorado" >> "$d/nucleo/quadro.py"
+          echo "x = 1" > "$d/nucleo/minha_melhoria.py"
+          bash local/instalar.sh --origem "$origem" --destino "$d" --so-conferir | tee "$RUNNER_TEMP/conf.txt"
+          grep -q "nucleo/quadro.py" "$RUNNER_TEMP/conf.txt"
+          grep -q "nucleo/minha_melhoria.py" "$RUNNER_TEMP/conf.txt"
+          grep -q "Encontrei 2 alterações" "$RUNNER_TEMP/conf.txt"
+          bash local/instalar.sh --origem "$origem" --destino "$d" --sem-inicio-automatico | tee "$RUNNER_TEMP/saida.txt"
+          grep -q "Guardei 2 alterações" "$RUNNER_TEMP/saida.txt"
+          g=$(ls -d "$d"/melhorias-guardadas/*/ | head -n 1)
+          test -f "$g/nucleo/minha_melhoria.py" && test -f "$g/LEIA-ME.txt"
+
       # Por último: forçar o download reinstala o mesmo Python 3.12.10 do runner e tira o
       # Python em que a primeira instalação se apoia (no computador real só baixa sem Python).
       - name: Instalador num Windows sem Python (baixa o oficial do python.org)

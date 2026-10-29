@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 from nucleo import config, eventos, tarefas_fila
 
 JANELA_DIAS = 15
-COLUNAS = {"chegou": "Chegou do PJe", "acao": "Precisa de ação",
+COLUNAS = {"chegou": "Chegou", "acao": "Precisa de ação",
            "autos": "Autos baixados", "acompanhar": "Só acompanhar",
            "resolvida": "Resolvido", "lex": "Lex minutando",
            "revisao": "Sua revisão", "protocolado": "Protocolado"}

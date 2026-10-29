@@ -70,3 +70,28 @@ def test_sem_keyring_instalado_le_none_e_recusa_gravar(monkeypatch):
     assert cofre.ler("pje_senha") is None
     with pytest.raises(cofre.CofreError, match="não está disponível"):
         cofre.gravar("pje_senha", "x")
+
+
+def test_ler_estrito_avisa_que_o_cofre_nao_abriu(monkeypatch):
+    class Quebrado:
+        def get_password(self, servico, nome):
+            raise OSError("trancado")
+
+    monkeypatch.setattr(cofre, "_keyring", lambda: Quebrado())
+    assert cofre.ler("lex_claude") is None  # sem estrito: como sempre
+    with pytest.raises(cofre.CofreError):
+        cofre.ler("lex_claude", estrito=True)
+
+
+def test_chaves_ler_estrito_no_modo_local(monkeypatch):
+    from ponte_mac import chaves
+
+    class Quebrado:
+        def get_password(self, servico, nome):
+            raise OSError("trancado")
+
+    monkeypatch.setenv("CONTROLADORIA_LOCAL", "1")
+    monkeypatch.setattr(cofre, "_keyring", lambda: Quebrado())
+    assert chaves.ler(chaves.ACESSO_CLAUDE) is None
+    with pytest.raises(RuntimeError):
+        chaves.ler(chaves.ACESSO_CLAUDE, estrito=True)

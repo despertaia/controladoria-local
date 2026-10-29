@@ -42,7 +42,7 @@
         {% if c.partes_publicadas %}<p class="cartao-orgao" title="Destinatários das publicações no DJEN">Na publicação: {% for g in c.partes_publicadas %}{% if g.separador %} {{ g.separador }} {% endif %}{{ g.nomes|join(', ') }}{% endfor %}</p>{% endif %}
         {% if c.orgao %}<p class="cartao-orgao">{{ c.orgao }}</p>{% endif %}
         {% if c.trecho %}{% if modo_apresentacao %}<p class="cartao-trecho texto-oculto">{{ texto_oculto }}</p>{% else %}<p class="cartao-trecho">{{ c.trecho }}</p>{% endif %}{% endif %}
-        <p class="cartao-meta"><span class="selo selo-neutro">{{ c.origem }}</span> {{ c.data_br }} · chegou {{ c.chegou_ha }}{% if c.n_itens > 1 %} · {{ c.n_itens }} novidades{% endif %}</p>
+        <p class="cartao-meta"><span class="selo selo-neutro" title="De onde veio: Diário = Diário de Justiça Eletrônico (DJEN); PJe = intimação no sistema do tribunal">{{ c.origem }}</span> {{ c.data_br }} · chegou {{ c.chegou_ha }}{% if c.n_itens > 1 %} · {{ c.n_itens }} novidades{% endif %}</p>
         {% if c.coluna == 'acao' %}
           {% if c.autos_estado == 'falhou' %}
           <p class="cartao-autos tom-alerta">{% if modo_apresentacao %}Falha ao baixar os autos.{% else %}Falha ao baixar os autos: {{ c.autos_detalhe }}{% endif %}</p>

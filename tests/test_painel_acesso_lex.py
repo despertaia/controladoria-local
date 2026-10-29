@@ -121,16 +121,18 @@ def test_modo_apresentacao_bloqueia(c):
 
 
 @pytest.mark.parametrize("resultado,frase", [
-    (True, "Acesso conferido"), (False, "O Claude recusou o acesso"),
-    (None, "Não deu para conferir agora")])
-def test_testar_usa_a_sonda_da_ponte(c, monkeypatch, tmp_path, resultado, frase):
+    ("ok", "Acesso conferido"),
+    ("recusado", "O Claude recusou o acesso guardado"),
+    ("sem_login", "O Claude não reconheceu o acesso guardado"),
+    ("indefinido", "Não deu para conferir agora")])
+def test_testar_com_acesso_guardado(c, monkeypatch, tmp_path, resultado, frase):
     chamadas = []
 
-    def validar(token, casa, tempo=300):
+    def classificar(token, casa, tempo=300):
         chamadas.append((token, casa, tempo))
         return resultado
 
-    monkeypatch.setattr(executor, "validar_acesso", validar)
+    monkeypatch.setattr(executor, "classificar_acesso", classificar)
     c.post("/configuracoes/lex/acesso", data={"codigo": CODIGO})
     r = c.post("/configuracoes/lex/acesso/testar")
     assert r.status_code == 302
@@ -139,17 +141,37 @@ def test_testar_usa_a_sonda_da_ponte(c, monkeypatch, tmp_path, resultado, frase)
     assert frase in html and CODIGO not in html
 
 
-def test_testar_sem_acesso_guardado_usa_o_login(c, monkeypatch):
+@pytest.mark.parametrize("resultado,frase", [
+    ("sem_login", "Ainda não há acesso guardado. Clique em Conectar o Lex."),
+    ("ok", "login normal do Claude Code deste computador"),
+    ("recusado", "O Claude recusou o login deste computador")])
+def test_testar_sem_acesso_guardado(c, monkeypatch, resultado, frase):
     chamadas = []
-    monkeypatch.setattr(executor, "validar_acesso",
-                        lambda token, casa, tempo=300: chamadas.append(token) or True)
+    monkeypatch.setattr(executor, "classificar_acesso",
+                        lambda token, casa, tempo=300: chamadas.append(token) or resultado)
     c.post("/configuracoes/lex/acesso/testar")
     assert chamadas == [None]
+    html = _pagina(c)
+    assert frase in html and "recusou o acesso guardado" not in html
+
+
+def test_testar_cofre_que_nao_abre(c, monkeypatch):
+    from ponte_mac import chaves
+
+    def ler(servico, rodar=None, estrito=False):
+        if estrito:
+            raise cofre.CofreError("trancado")
+        return None
+
+    monkeypatch.setattr(chaves, "ler", ler)
+    monkeypatch.setattr(executor, "classificar_acesso", lambda *a, **k: pytest.fail("não testa"))
+    c.post("/configuracoes/lex/acesso/testar")
+    assert "O cofre de senhas deste computador não abriu" in _pagina(c)
 
 
 def test_testar_sem_claude(c, monkeypatch):
     monkeypatch.setattr(executor, "localizar_claude", lambda env: None)
-    monkeypatch.setattr(executor, "validar_acesso", lambda *a, **k: pytest.fail("não testa"))
+    monkeypatch.setattr(executor, "classificar_acesso", lambda *a, **k: pytest.fail("não testa"))
     c.post("/configuracoes/lex/acesso/testar")
     assert "Claude Code não foi encontrado" in _pagina(c)
 

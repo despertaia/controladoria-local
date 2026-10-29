@@ -37,7 +37,7 @@ def _coluna(cliente):
 
 def test_cockpit_mostra_o_quadro(cliente):
     html = cliente.get("/").get_data(as_text=True)
-    assert 'id="quadro"' in html and "Chegou do PJe" in html and "MARIA FICTÍCIA" in html
+    assert 'id="quadro"' in html and "Chegou" in html and "MARIA FICTÍCIA" in html and "Chegou do PJe" not in html
     assert "Precisa de ação" in html and "Só acompanhar" in html
 
 
@@ -159,7 +159,7 @@ def _fragmento(cliente):
 
 def test_fragmento_mostra_as_cinco_colunas(cliente):
     html = _fragmento(cliente)
-    for titulo in ("Chegou do PJe", "Precisa de ação", "Autos baixados", "Lex minutando",
+    for titulo in ("Chegou", "Precisa de ação", "Autos baixados", "Lex minutando",
                    "Sua revisão"):
         assert f'aria-label="{titulo}"' in html
     assert "O Lex está livre." in html and "Nenhuma peça esperando sua revisão." in html

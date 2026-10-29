@@ -2,6 +2,16 @@
 
 O que mudou em cada versão, a mais recente primeiro.
 
+## 1.4.3 — 29/10/2026
+
+- Conectar o Lex: se a Anthropic não aceitar o código, a tela avisa e já abre uma autorização nova. Use só a aba mais recente.
+- Depois de colar o código, a tela mostra «Conferindo…» até a resposta e avisa se a Anthropic não responder em 1 minuto.
+- Botão «Copiar o link» e uma ajuda para quando a página do Claude disser «Não foi possível verificar seu navegador».
+- «Testar acesso» diz exatamente o que houve: sem acesso guardado, acesso recusado ou sem resposta.
+- Botão «Copiar diagnóstico»: copia um texto curto, sem senhas nem códigos, para colar no grupo da mentoria.
+- A coluna «Chegou do PJe» virou «Chegou»: as publicações vêm do Diário de Justiça Eletrônico (selo «Diário») e as intimações, do PJe (selo «PJe»).
+- Atualizar não apaga mais as suas melhorias: antes de trocar o código, a Controladoria guarda o que você mudou em `melhorias-guardadas` e o Claude oferece refazer na versão nova.
+
 ## 1.4.2 — 26/10/2026
 
 - Grupos: inclua processos num grupo já criado. Na página do grupo, cole um ou mais números e clique em «Incluir»; a Controladoria confere cada um, não repete o que já está lá e diz quantos entraram e quais ficaram de fora, e por quê.
