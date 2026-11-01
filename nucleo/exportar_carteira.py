@@ -1,6 +1,7 @@
 """Planilha Carteira.xlsx a partir do banco: aba "Carteira" (processos em que
-o advogado atua, sem arquivados) e aba "A conferir" (atuação não confirmada:
-fora do tribunal do escritório, OAB não consta no processo ou sem acesso pelo PJe)."""
+o advogado atua, sem arquivados), aba "A conferir" (atuação não confirmada:
+fora do tribunal do escritório, OAB não consta no processo ou sem acesso pelo PJe) e,
+quando pedida, aba "Arquivados e lixeira" (o estado vai na coluna Situação)."""
 
 from __future__ import annotations
 
@@ -48,12 +49,16 @@ def _linha(p, hoje: date) -> list:
     ]
 
 
-def gerar_xlsx(ativa: list, a_conferir: list, hoje: date | None = None) -> bytes:
+def gerar_xlsx(ativa: list, a_conferir: list, hoje: date | None = None,
+               arquivados: list | None = None) -> bytes:
     hoje = hoje or date.today()
     wb = Workbook()
     principal = wb.active
     principal.title = "Carteira"
-    for aba, linhas in ((principal, ativa), (wb.create_sheet("A conferir"), a_conferir)):
+    abas = [(principal, ativa), (wb.create_sheet("A conferir"), a_conferir)]
+    if arquivados is not None:
+        abas.append((wb.create_sheet("Arquivados e lixeira"), arquivados))
+    for aba, linhas in abas:
         aba.append(COLUNAS)
         for celula in aba[1]:
             celula.font = Font(bold=True)

@@ -206,8 +206,8 @@ def test_atualizar_ponta_a_ponta(conn, tmp_path):
     r = carteira.atualizar(conn, ADV, desde=date(2026, 7, 1), ate=date(2026, 7, 31),
                            obter_djen=obter_djen, fabrica=fabrica, raiz=str(tmp_path),
                            pausa_djen=0, progresso=lambda mensagem: None)
-    assert r == {"processos": 3, "carteira_ativa": 2, "arquivados": 0,
-                 "a_conferir": 1, "falhas_pje": 0, "publicacoes": 2}
+    assert r == {"processos": 3, "carteira_ativa": 2, "arquivados": 0, "arquivados_por_voce": 0,
+                 "excluidos": 0, "a_conferir": 1, "falhas_pje": 0, "publicacoes": 2}
     assert [p["numero"] for p in carteira.listar(conn, "a_conferir")] == [TJMT_C]
 
 
@@ -548,3 +548,237 @@ def test_gravar_publicacoes_guarda_as_partes_e_completa_as_antigas(conn):
     carteira.gravar_publicacoes_novas(conn, [antiga])
     assert "UNIÃO FEDERAL" in conn.execute("SELECT partes_json FROM publicacao WHERE id = 2"
                                            ).fetchone()[0]
+
+
+# --- 1.5.0: arquivar, lixeira e desarquivar o do tribunal ----------------------------
+
+_ABAS = ("ativa", "a_conferir", "arquivados", "lixeira", "descartados")
+
+
+def _todas(conn, hoje=None):
+    return {aba: [p["numero"] for p in carteira.listar(conn, aba, hoje)] for aba in _ABAS}
+
+
+def _da_carteira(conn, numero=TJMT_A):
+    carteira.registrar_candidato(conn, numero, "TJMT", "djen")
+    conn.execute("UPDATE processo SET advogado_atua = 1 WHERE numero = ?", (numero,))
+
+
+def _linha_de(conn, numero):
+    return conn.execute("SELECT * FROM processo WHERE numero = ?", (numero,)).fetchone()
+
+
+def test_arquivar_tira_da_ativa_e_desarquivar_devolve(conn):
+    _da_carteira(conn)
+    assert carteira.arquivar(conn, TJMT_A) is True
+    assert carteira.arquivar(conn, TJMT_A) is False  # já estava
+    abas = _todas(conn)
+    assert abas["ativa"] == [] and abas["arquivados"] == [TJMT_A]
+    linha = _linha_de(conn, TJMT_A)
+    assert linha["arquivado_por_voce_em"] and linha["arquivado"] == 0
+    assert carteira.situacao(linha) == carteira.ARQUIVADO_POR_VOCE
+    assert carteira.estado(linha) == "arquivado_voce"
+    assert carteira.desarquivar(conn, TJMT_A) is True
+    assert carteira.desarquivar(conn, TJMT_A) is False
+    assert _todas(conn)["ativa"] == [TJMT_A]
+    registrados = eventos.listar(conn, TJMT_A)
+    assert [e["tipo"] for e in registrados][-2:] == ["processo_arquivado", "processo_desarquivado"]
+    assert registrados[-1]["dados"] == {"por": "voce"}
+
+
+def test_arquivar_da_aba_a_conferir_e_desarquivar_volta_para_la(conn):
+    carteira.registrar_candidato(conn, TJMT_C, "TJMT", "busca")
+    carteira.arquivar(conn, TJMT_C)
+    abas = _todas(conn)
+    assert abas["a_conferir"] == [] and abas["arquivados"] == [TJMT_C]
+    carteira.desarquivar(conn, TJMT_C)
+    assert _todas(conn)["a_conferir"] == [TJMT_C]
+
+
+def test_excluir_tira_de_todas_as_abas_e_restaurar_devolve_para_onde_estava(conn):
+    _da_carteira(conn)
+    carteira.registrar_candidato(conn, TJMT_C, "TJMT", "busca")
+    carteira.descartar(conn, TJMT_C)
+    for numero in (TJMT_A, TJMT_C):
+        assert carteira.excluir(conn, numero) is True
+        assert carteira.excluir(conn, numero) is False
+    assert _todas(conn) == {"ativa": [], "a_conferir": [], "arquivados": [],
+                            "lixeira": [TJMT_A, TJMT_C], "descartados": []}
+    linha = _linha_de(conn, TJMT_A)
+    assert carteira.situacao(linha) == carteira.NA_LIXEIRA
+    assert carteira.estado(linha) == "lixeira"
+    assert carteira.restaurar_da_lixeira(conn, TJMT_A) is True
+    assert carteira.restaurar_da_lixeira(conn, TJMT_A) is False
+    assert carteira.restaurar_da_lixeira(conn, TJMT_C) is True
+    abas = _todas(conn)
+    assert abas["ativa"] == [TJMT_A] and abas["descartados"] == [TJMT_C] and abas["lixeira"] == []
+    tipos = [e["tipo"] for e in eventos.listar(conn, TJMT_A)]
+    assert tipos[-2:] == ["processo_excluido", "processo_restaurado_da_lixeira"]
+
+
+def test_lixeira_mostra_30_dias_e_nada_e_apagado(conn):
+    _da_carteira(conn)
+    conn.execute("INSERT INTO publicacao (id, numero, tribunal, data_disponibilizacao) "
+                 "VALUES (1, ?, 'TJMT', '2026-08-01')", (TJMT_A,))
+    conn.execute("UPDATE processo SET excluido_em = '2026-09-29T10:00:00-04:00' "
+                 "WHERE numero = ?", (TJMT_A,))
+    assert _todas(conn, date(2026, 10, 28))["lixeira"] == [TJMT_A]  # dia 29
+    assert _todas(conn, date(2026, 10, 29))["lixeira"] == []  # dia 30: some da lixeira
+    assert conn.execute("SELECT COUNT(*) FROM processo").fetchone()[0] == 1
+    assert conn.execute("SELECT COUNT(*) FROM publicacao").fetchone()[0] == 1
+    assert carteira.restaurar_da_lixeira(conn, TJMT_A) is True  # ainda dá para trazer
+    assert _todas(conn, date(2026, 10, 29))["ativa"] == [TJMT_A]
+
+
+def test_arquivar_e_desarquivar_nao_valem_na_lixeira(conn):
+    _da_carteira(conn)
+    carteira.excluir(conn, TJMT_A)
+    assert carteira.arquivar(conn, TJMT_A) is False
+    assert carteira.desarquivar(conn, TJMT_A) is False
+
+
+def test_arquivar_nao_vale_para_o_descartado(conn):
+    _da_carteira(conn)
+    conn.execute("UPDATE processo SET descartado_em = 'x', advogado_atua = 0 "
+                 "WHERE numero = ?", (TJMT_A,))
+    assert carteira.arquivar(conn, TJMT_A) is False  # POST montado à mão
+    conn.execute("UPDATE processo SET advogado_atua = 1 WHERE numero = ?", (TJMT_A,))
+    assert carteira.arquivar(conn, TJMT_A) is True  # passou a ter a OAB: está na Ativa
+
+
+def test_arquivado_e_excluido_volta_para_arquivados_ao_restaurar(conn):
+    _da_carteira(conn)
+    carteira.arquivar(conn, TJMT_A)
+    carteira.excluir(conn, TJMT_A)
+    assert _todas(conn)["arquivados"] == []
+    carteira.restaurar_da_lixeira(conn, TJMT_A)
+    assert _todas(conn)["arquivados"] == [TJMT_A]
+
+
+def test_desarquivar_o_do_tribunal_vale_ate_o_tribunal_arquivar_de_novo(conn):
+    _da_carteira(conn)
+    conn.execute("UPDATE processo SET data_arquivamento = '20260716' WHERE numero = ?", (TJMT_A,))
+    carteira.recalcular_situacao(conn, TJMT_A)
+    linha = _linha_de(conn, TJMT_A)
+    assert linha["arquivado"] == 1 and carteira.estado(linha) == "arquivado_tribunal"
+    assert carteira.situacao(linha) == carteira.ARQUIVADO
+    assert _todas(conn)["arquivados"] == [TJMT_A]
+    assert carteira.desarquivar(conn, TJMT_A) is True
+    linha = _linha_de(conn, TJMT_A)
+    assert linha["arquivado"] == 0 and linha["desarquivado_ref"] == "20260716"
+    assert eventos.listar(conn, TJMT_A)[-1]["dados"] == {"por": "tribunal"}
+    carteira.recalcular_situacao(conn, TJMT_A)  # a varredura recalcula: segue desarquivado
+    assert _todas(conn)["ativa"] == [TJMT_A]
+    # O tribunal arquiva outra vez (outra data): volta para Arquivados.
+    conn.execute("UPDATE processo SET data_arquivamento = '20261020' WHERE numero = ?", (TJMT_A,))
+    carteira.recalcular_situacao(conn, TJMT_A)
+    assert _todas(conn)["arquivados"] == [TJMT_A]
+
+
+def test_arquivado_do_tribunal_fora_da_carteira_segue_fora_das_abas(conn):
+    carteira.registrar_candidato(conn, TJMT_C, "TJMT", "busca")
+    conn.execute("UPDATE processo SET advogado_atua = 0, data_arquivamento = '20260716', "
+                 "arquivado = 1 WHERE numero = ?", (TJMT_C,))
+    assert _todas(conn) == {aba: [] for aba in _ABAS}
+
+
+def test_resumo_conta_arquivados_por_voce_e_excluidos(conn):
+    _da_carteira(conn)
+    _da_carteira(conn, TJMT_C)
+    carteira.arquivar(conn, TJMT_A)
+    carteira.excluir(conn, TJMT_C)
+    r = carteira.resumo(conn)
+    assert r["carteira_ativa"] == 0
+    assert r["arquivados_por_voce"] == 1 and r["excluidos"] == 1
+
+
+@pytest.mark.parametrize("campos, rotulo", [
+    ({"excluido_em": "2026-10-29T10:00:00-04:00", "arquivado_por_voce_em": "x", "arquivado": 1},
+     "Na lixeira"),
+    ({"arquivado_por_voce_em": "2026-10-29T10:00:00-04:00", "arquivado": 1}, "Arquivado por você"),
+    ({"arquivado": 1, "advogado_atua": 1, "instancia": "1grau"}, "Arquivado"),
+])
+def test_situacao_dos_estados_novos(campos, rotulo):
+    assert carteira.situacao(_linha(**campos)) == rotulo
+
+
+@pytest.mark.parametrize("campos, esperado", [
+    ({"advogado_atua": 1}, "ativa"),
+    ({"advogado_atua": 0, "confirmado_em": "x"}, "ativa"),
+    ({"advogado_atua": 0}, "a_conferir"),
+    ({"advogado_atua": None}, "a_conferir"),
+    ({"advogado_atua": 0, "descartado_em": "x"}, "descartado"),
+    ({"advogado_atua": 1, "descartado_em": "x"}, "ativa"),
+    ({"advogado_atua": 1, "arquivado": 1}, "arquivado_tribunal"),
+    ({"advogado_atua": 1, "arquivado_por_voce_em": "x"}, "arquivado_voce"),
+    ({"advogado_atua": 1, "arquivado_por_voce_em": "x", "excluido_em": "x"}, "lixeira"),
+])
+def test_estado(campos, esperado):
+    assert carteira.estado({"arquivado": 0, **campos}) == esperado
+
+
+def test_publicacao_nova_traz_de_volta_o_arquivado_por_voce(conn):
+    _da_carteira(conn)
+    conn.execute("UPDATE processo SET arquivado_por_voce_em = '2026-10-01T10:00:00-04:00' "
+                 "WHERE numero = ?", (TJMT_A,))
+    carteira.gravar_publicacoes_novas(conn, [_pub(1, TJMT_A, data="2026-10-01")])  # mesmo dia
+    assert _linha_de(conn, TJMT_A)["arquivado_por_voce_em"]
+    carteira.gravar_publicacoes_novas(conn, [_pub(2, TJMT_A, data="2026-10-05")])
+    linha = _linha_de(conn, TJMT_A)
+    assert linha["arquivado_por_voce_em"] is None and carteira.estado(linha) == "ativa"
+    voltou = eventos.listar(conn, TJMT_A)[-1]
+    assert voltou["tipo"] == "processo_voltou"
+    assert voltou["dados"] == {"de": "arquivado", "publicacao": 2, "data": "2026-10-05"}
+
+
+def test_publicacao_nova_traz_o_excluido_para_a_conferir(conn):
+    _da_carteira(conn)
+    conn.execute("UPDATE processo SET advogado_atua = 0, confirmado_em = '2026-09-01', "
+                 "descartado_em = '2026-09-02', excluido_em = '2026-08-01T10:00:00-04:00' "
+                 "WHERE numero = ?", (TJMT_A,))  # excluído há mais de 30 dias
+    carteira.gravar_publicacoes_novas(conn, [_pub(3, TJMT_A, data="2026-10-05")])
+    linha = _linha_de(conn, TJMT_A)
+    assert (linha["excluido_em"], linha["confirmado_em"], linha["descartado_em"]) == (
+        None, None, None)
+    assert carteira.estado(linha) == "a_conferir"
+    assert eventos.listar(conn, TJMT_A)[-1]["dados"]["de"] == "lixeira"
+
+
+def test_publicacao_de_antes_da_marca_nao_traz_de_volta(conn):
+    _da_carteira(conn)
+    conn.execute("UPDATE processo SET arquivado_por_voce_em = '2026-10-01T10:00:00-04:00', "
+                 "excluido_em = '2026-10-10T10:00:00-04:00' WHERE numero = ?", (TJMT_A,))
+    # depois do arquivamento, mas antes da exclusão: segue na lixeira
+    carteira.gravar_publicacoes_novas(conn, [_pub(4, TJMT_A, data="2026-10-05")])
+    linha = _linha_de(conn, TJMT_A)
+    assert linha["excluido_em"] and linha["arquivado_por_voce_em"]
+    assert all(e["tipo"] != "processo_voltou" for e in eventos.listar(conn, TJMT_A))
+
+
+def test_publicacao_ja_gravada_nao_traz_de_volta(conn):
+    _da_carteira(conn)
+    carteira.gravar_publicacoes_novas(conn, [_pub(5, TJMT_A, data="2026-10-05")])
+    conn.execute("UPDATE processo SET arquivado_por_voce_em = '2026-10-01T10:00:00-04:00' "
+                 "WHERE numero = ?", (TJMT_A,))
+    carteira.gravar_publicacoes_novas(conn, [_pub(5, TJMT_A, data="2026-10-05")])
+    assert _linha_de(conn, TJMT_A)["arquivado_por_voce_em"]
+
+
+def test_atualizar_nao_consulta_o_pje_do_arquivado_por_voce_nem_da_lixeira(conn, tmp_path):
+    for numero in (TJMT_A, TJMT_C, TJMT_D):
+        carteira.registrar_candidato(conn, numero, "TJMT", "djen")
+    carteira.arquivar(conn, TJMT_A)
+    carteira.excluir(conn, TJMT_C)
+    conn.commit()
+    consultados = []
+
+    class Registra(ClienteFalso):
+        def consultar_processo(self, numero, incluir_movimentos=False):
+            consultados.append(numero)
+            return super().consultar_processo(numero, incluir_movimentos)
+
+    carteira.atualizar(conn, ADV, desde=date(2026, 7, 1), ate=date(2026, 7, 31),
+                       obter_djen=lambda params: {"status": "success", "items": []},
+                       fabrica=lambda instancia: Registra({TJMT_D: processo_do_cliente()}),
+                       raiz=str(tmp_path), pausa_djen=0, progresso=lambda m: None)
+    assert set(consultados) == {TJMT_D}

@@ -205,7 +205,7 @@ def test_threads_abrindo_banco_novo_ao_mesmo_tempo_nao_brigam(tmp_path):
 
 def test_migracao_7_credencial_conexao_e_pasta(tmp_path):
     conn = banco.conectar(str(tmp_path / "b.db"))
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(banco.MIGRACOES) == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(banco.MIGRACOES) >= 7
     cols = {r[1] for r in conn.execute("PRAGMA table_info(demanda)")}
     assert {"pasta_estado", "pasta_nome", "pasta_arquivos"} <= cols
     conn.execute("INSERT INTO credencial VALUES ('TJMT','1grau','s','2026-10-21T10:00')")
@@ -235,5 +235,37 @@ def test_migracao_7_sobre_v6_preserva_demandas(tmp_path):
     conn = banco.conectar(caminho)
     d = conn.execute("SELECT pasta_estado, pasta_nome, pasta_arquivos FROM demanda").fetchone()
     assert tuple(d) == ("", "", "[]")
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 7
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(banco.MIGRACOES)
     conn.close()
+
+
+def test_migracao_8_arquivar_e_lixeira(tmp_path):
+    conn = banco.conectar(str(tmp_path / "b.db"))
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(banco.MIGRACOES) >= 8
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(processo)")}
+    assert {"arquivado_por_voce_em", "excluido_em", "desarquivado_ref"} <= cols
+    conn.close()
+
+
+def test_migracao_8_sobre_v7_preserva_processos(tmp_path):
+    caminho = str(tmp_path / "v7.db")
+    c = sqlite3.connect(caminho)
+    for i in range(7):
+        c.executescript(f"BEGIN;\n{banco.MIGRACOES[i]}\nPRAGMA user_version = {i + 1};\nCOMMIT;")
+    c.execute("INSERT INTO processo (numero, tribunal, advogado_atua, confirmado_em) "
+              "VALUES ('1', 'TJMT', 1, '2026-10-01')")
+    c.commit()
+    c.close()
+    conn = banco.conectar(caminho)
+    linha = conn.execute("SELECT advogado_atua, confirmado_em, arquivado_por_voce_em, "
+                         "excluido_em, desarquivado_ref FROM processo").fetchone()
+    assert tuple(linha) == (1, "2026-10-01", None, None, None)
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    conn.close()
+
+
+def test_migracao_8_so_acrescenta_colunas():
+    """Segura sobre o banco da produção: não recria tabela nem apaga dado."""
+    sql = banco.MIGRACOES[7].upper()
+    assert "DROP" not in sql and "DELETE" not in sql and "CREATE TABLE" not in sql
+    assert sql.count("ALTER TABLE PROCESSO ADD COLUMN") == 3

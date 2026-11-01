@@ -47,23 +47,26 @@ def desde_para_djen(conn: sqlite3.Connection, hoje: date) -> date:
 
 def _numeros_para_sincronizar(conn: sqlite3.Connection) -> list[str]:
     """Ativos dos tribunais do escritório (a OAB atua ou o advogado confirmou:
-    FILTRO_ATIVA) e os ainda não conferidos (recém-descobertos), sem arquivados nem
-    descartados."""
+    FILTRO_ATIVA) e os ainda não conferidos (recém-descobertos), sem arquivados (pelo
+    tribunal ou por você), descartados nem os da lixeira."""
     linhas = conn.execute(
         f"SELECT numero FROM processo WHERE ({carteira.FILTRO_ATIVA}) "
-        "OR (advogado_atua IS NULL AND arquivado = 0 AND descartado_em IS NULL) "
+        "OR (advogado_atua IS NULL AND arquivado = 0 AND descartado_em IS NULL "
+        "AND arquivado_por_voce_em IS NULL AND excluido_em IS NULL) "
         "ORDER BY numero").fetchall()
     return [r["numero"] for r in linhas if carteira.e_do_tribunal(r["numero"])]
 
 
 def _confirmados_para_o_djen(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     """Processos que o advogado confirmou ("É meu", "Adicionar e acompanhar"), sem
-    arquivados nem descartados: o DJEN é consultado pelo número deles, porque a OAB
-    dele pode não constar nas publicações. Os confirmados mais recentes primeiro."""
+    arquivados pelo tribunal, descartados nem os da lixeira: o DJEN é consultado pelo
+    número deles, porque a OAB dele pode não constar nas publicações. Os arquivados por
+    você entram por último (é assim que uma publicação nova os traz de volta); entre os
+    demais, os confirmados mais recentes primeiro."""
     return conn.execute(
         "SELECT numero, confirmado_em FROM processo WHERE confirmado_em IS NOT NULL "
-        "AND arquivado = 0 AND descartado_em IS NULL "
-        "ORDER BY confirmado_em DESC, numero").fetchall()
+        "AND arquivado = 0 AND descartado_em IS NULL AND excluido_em IS NULL "
+        "ORDER BY arquivado_por_voce_em IS NOT NULL, confirmado_em DESC, numero").fetchall()
 
 
 def _djen_por_numero(conn: sqlite3.Connection, adv: carteira.Advogado, desde: date,

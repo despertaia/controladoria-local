@@ -4,7 +4,7 @@ import pathlib
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent
 ROTULOS = ('"Ativo"', '"Sem acesso pelo PJe"', "Atua (pelo DJEN", '"Arquivado"',
-           "A conferir (")
+           "A conferir (", '"Arquivado por você"', '"Na lixeira"')
 
 
 def _fontes():

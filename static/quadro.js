@@ -55,35 +55,49 @@
     selo.setAttribute('aria-label', n + ' na triagem');
   }
 
-  // "Mandar pro Lex" aberto (e o que já foi digitado) sobrevive à troca do quadro.
+  // "Mandar pro Lex" aberto (e o que já foi digitado) e o menu «⋯» aberto sobrevivem à
+  // troca do quadro.
   function abertos() {
-    var mapa = {};
+    var mapa = { lex: {}, menu: {} };
     raiz.querySelectorAll('details.mandar-lex[open]').forEach(function (d) {
       var cartao = d.closest('[data-cartao]');
       if (!cartao) return;
       var campo = d.querySelector('textarea');
-      mapa[cartao.dataset.cartao] = {
+      mapa.lex[cartao.dataset.cartao] = {
         texto: campo ? campo.value : '',
         foco: !!campo && document.activeElement === campo,
         fim: campo ? campo.selectionEnd : 0
       };
     });
+    raiz.querySelectorAll('details.cartao-menu[open]').forEach(function (d) {
+      var cartao = d.closest('[data-cartao]');
+      if (!cartao) return;
+      mapa.menu[cartao.dataset.cartao] = { foco: d.contains(document.activeElement) };
+    });
     return mapa;
   }
 
   function reabrir(mapa) {
-    Object.keys(mapa).forEach(function (id) {
+    Object.keys(mapa.lex).forEach(function (id) {
       var cartao = raiz.querySelector('[data-cartao="' + id + '"]');
       var d = cartao && cartao.querySelector('details.mandar-lex');
       if (!d) return;
       d.open = true;
       var campo = d.querySelector('textarea');
       if (!campo) return;
-      campo.value = mapa[id].texto;
-      if (mapa[id].foco) {
+      campo.value = mapa.lex[id].texto;
+      if (mapa.lex[id].foco) {
         campo.focus({ preventScroll: true });
-        campo.setSelectionRange(mapa[id].fim, mapa[id].fim);
+        campo.setSelectionRange(mapa.lex[id].fim, mapa.lex[id].fim);
       }
+    });
+    Object.keys(mapa.menu).forEach(function (id) {
+      var cartao = raiz.querySelector('[data-cartao="' + id + '"]');
+      var d = cartao && cartao.querySelector('details.cartao-menu');
+      if (!d) return;
+      d.open = true;
+      var botao = d.querySelector('summary');
+      if (mapa.menu[id].foco && botao) botao.focus({ preventScroll: true });
     });
   }
 
@@ -193,6 +207,8 @@
   raiz.addEventListener('submit', function (e) {
     var form = e.target.closest('form.quadro-acao');
     if (!form) return;
+    // «Cancelar» na confirmação do formulário (onsubmit="return confirm(...)"): não envia.
+    if (e.defaultPrevented) return;
     e.preventDefault();
     var botao = form.querySelector('button');
     if (form.classList.contains('quadro-chave')) focoNaChave = true;

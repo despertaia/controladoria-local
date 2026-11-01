@@ -69,7 +69,7 @@
     <tbody>
       {% for p in processos %}
       <tr class="linha" onclick="window.location='{{ url_for('processo', numero=p.numero) }}'">
-        <td><span class="numero">{{ p.formatado }}</span></td>
+        <td><span class="numero">{{ p.formatado }}</span>{% if p.estado %} <span class="selo selo-neutro">{{ p.estado }}</span>{% endif %}</td>
         <td class="partes">
           {% if p.dados and p.dados.partes %}
             {% for polo in p.dados.partes %}

@@ -20,8 +20,8 @@ def test_gerar_preenche_a_carteira_ficticia():
     conn = banco.conectar(":memory:")
     banco_demo.gerar(conn, HOJE)
     assert carteira.resumo(conn) == {
-        "processos": 25, "carteira_ativa": 17, "arquivados": 3,
-        "a_conferir": 5, "falhas_pje": 1, "publicacoes": 19}
+        "processos": 28, "carteira_ativa": 17, "arquivados": 3, "arquivados_por_voce": 1,
+        "excluidos": 2, "a_conferir": 5, "falhas_pje": 1, "publicacoes": 19}
 
 
 def test_demo_tem_processo_do_trf1_a_conferir_com_integra_e_partes():
@@ -412,3 +412,30 @@ def test_demo_ignora_chave_do_ambiente_fora_de_dados(monkeypatch, tmp_path, fora
     dentro = str(tmp_path / "dados" / "outra.key")
     monkeypatch.setenv("CONTROLADORIA_CHAVE_COFRE", dentro)
     assert banco_demo._chave_do_cofre() == dentro
+
+
+def test_demo_tem_um_processo_em_cada_estado_de_arquivo():
+    from io import BytesIO
+
+    import openpyxl
+
+    from nucleo import painel_dados
+    from nucleo.exportar_carteira import gerar_xlsx
+    conn = banco.conectar(":memory:")
+    banco_demo.gerar(conn, HOJE)
+    estados = {p["numero"]: carteira.estado(p) for p in conn.execute("SELECT * FROM processo")}
+    assert estados[banco_demo._tjmt(banco_demo.ARQUIVADO_POR_VOCE)] == "arquivado_voce"
+    assert estados[banco_demo._tjmt(banco_demo.NA_LIXEIRA)] == "lixeira"
+    assert estados[banco_demo._tjmt(banco_demo.EXCLUIDO_ANTIGO)] == "lixeira"
+    assert estados[banco_demo._tjmt(banco_demo.VOLTOU)] == "ativa"
+    lixeira = painel_dados.linhas_da_carteira(conn, "lixeira", HOJE)
+    assert [l["numero"] for l in lixeira] == [banco_demo._tjmt(banco_demo.NA_LIXEIRA)]
+    assert lixeira[0]["selo_estado"] == "faltam 25 dias"  # o de 40 dias já saiu da aba
+    voltou = next(l for l in painel_dados.linhas_da_carteira(conn, "ativa", HOJE)
+                  if l["numero"] == banco_demo._tjmt(banco_demo.VOLTOU))
+    assert voltou["voltou_br"]
+    assert painel_dados.faixa_voltaram(conn, HOJE) == {"quantidade": 1, "aba": "ativa"}
+    linhas = carteira.listar(conn, "arquivados", HOJE) + carteira.listar(conn, "lixeira", HOJE)
+    wb = openpyxl.load_workbook(BytesIO(gerar_xlsx([], [], hoje=HOJE, arquivados=linhas)))
+    situacoes = {c.value for c in wb["Arquivados e lixeira"]["O"][1:]}
+    assert situacoes == {"Arquivado", "Arquivado por você", "Na lixeira"}

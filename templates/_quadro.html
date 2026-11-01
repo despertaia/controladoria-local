@@ -111,6 +111,24 @@
             {{ mover(c, 'protocolado', 'Protocolei', '') }}
           {% endif %}
           <a class="btn btn-pequeno btn-secundario" href="{{ url_for('demanda_tela', demanda_id=c.id) }}">Abrir</a>
+          {% if not modo_apresentacao %}
+          <details class="cartao-menu">
+            <summary class="btn btn-pequeno btn-secundario" aria-label="Mais ações do processo" title="Mais ações">⋯</summary>
+            <div class="cartao-menu-itens">
+              {% if c.lex_no_processo %}<p class="cartao-menu-nota">Espere o Lex terminar ou desista do pedido.</p>{% endif %}
+              <form method="post" action="{{ url_for('carteira_arquivar') }}" class="quadro-acao" onsubmit="return confirm('Arquivar este processo? Os cartões dele saem do quadro.');">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                <input type="hidden" name="numero" value="{{ c.numero }}">
+                <button type="submit" class="btn btn-pequeno btn-secundario"{% if c.lex_no_processo %} disabled{% endif %}>Arquivar processo</button>
+              </form>
+              <form method="post" action="{{ url_for('carteira_excluir') }}" class="quadro-acao" onsubmit="return confirm('Excluir este processo? Ele fica na lixeira por 30 dias.');">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                <input type="hidden" name="numero" value="{{ c.numero }}">
+                <button type="submit" class="btn btn-pequeno btn-secundario"{% if c.lex_no_processo %} disabled{% endif %}>Excluir processo</button>
+              </form>
+            </div>
+          </details>
+          {% endif %}
         </div>
       </article>
       {% else %}

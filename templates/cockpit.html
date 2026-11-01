@@ -16,6 +16,13 @@
   </div>
 </section>
 
+{% if faixa_voltaram %}
+<div class="aviso aviso-aviso faixa-voltaram" role="status">
+  {{ faixa_voltaram.quantidade }} processo(s) voltaram por publicação nova.
+  <a href="{{ url_for('carteira_tela', aba=faixa_voltaram.aba) }}">Ver na carteira</a>
+</div>
+{% endif %}
+
 <section class="kpis" aria-label="Números da carteira">
   <a class="kpi destaque" href="{{ url_for('carteira_tela') }}">
     <span class="kpi-rotulo">Processos ativos</span><span class="kpi-valor">{{ kpis.ativos }}</span>

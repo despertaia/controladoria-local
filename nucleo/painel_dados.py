@@ -27,6 +27,17 @@ _TONS = {
 }
 _INSTANCIAS = {"1grau": "1º grau", "2grau": "2º grau"}
 
+# Arquivar e lixeira (1.5.0).
+DIAS_SELO_VOLTOU = 7  # selo «Voltou» e faixa do Cockpit, contados do evento processo_voltou
+_SELO_ARQUIVADO = {"arquivado_voce": "por você", "arquivado_tribunal": "pelo tribunal"}
+# Estado do processo → botões da página do processo, na ordem da tela.
+ACOES_POR_ESTADO = {
+    "ativa": ("arquivar", "excluir"), "a_conferir": ("arquivar", "excluir"),
+    "arquivado_voce": ("desarquivar", "excluir"),
+    "arquivado_tribunal": ("desarquivar", "excluir"),
+    "descartado": ("excluir",), "lixeira": ("restaurar",),
+}
+
 
 def __getattr__(nome: str):
     # `painel_dados.FUSO`: o fuso do tribunal atual, lido a cada uso.
@@ -75,6 +86,85 @@ def data_br(aaaammdd: str | None) -> str:
 def dias_desde(aaaammdd: str | None, hoje: date) -> int | None:
     d = _data(aaaammdd)
     return (hoje - d).days if d else None
+
+
+def _dia_mes(valor: str | None) -> str:
+    """"dd/mm" de uma data (AAAA-MM-DD, AAAAMMDD ou ISO com hora); "" se não houver."""
+    d = _data(valor)
+    return d.strftime("%d/%m") if d else ""
+
+
+def _dias(n: int) -> str:
+    return f"{n} dia{'s' if n != 1 else ''}"
+
+
+def faltam_dias_na_lixeira(excluido_em: str | None, hoje: date) -> int:
+    """Dias até o processo sumir da Lixeira (0 = já saiu dela; nada é apagado)."""
+    dias = dias_desde(excluido_em, hoje)
+    if dias is None:
+        return 0
+    return max(carteira.DIAS_NA_LIXEIRA - dias, 0)
+
+
+def voltas_recentes(conn: sqlite3.Connection, hoje: date) -> dict[str, str]:
+    """Processos que voltaram por publicação nova nos últimos DIAS_SELO_VOLTOU dias:
+    número → data da publicação (AAAA-MM-DD). Vale a volta mais recente."""
+    corte = (hoje - timedelta(days=DIAS_SELO_VOLTOU)).isoformat()
+    voltas: dict[str, str] = {}
+    for e in conn.execute("SELECT numero, dados FROM evento WHERE tipo = 'processo_voltou' "
+                          "AND substr(quando, 1, 10) > ? ORDER BY id", (corte,)):
+        try:
+            dados = json.loads(e["dados"] or "{}")
+        except ValueError:
+            continue
+        if e["numero"] and isinstance(dados, dict):
+            voltas[e["numero"]] = str(dados.get("data") or "")
+    return voltas
+
+
+def faixa_voltaram(conn: sqlite3.Connection, hoje: date) -> dict | None:
+    """Faixa do Cockpit: quantos voltaram por publicação nova (últimos DIAS_SELO_VOLTOU
+    dias) e seguem na Ativa ou em A conferir; o link vai para a aba da maioria."""
+    voltas = voltas_recentes(conn, hoje)
+    if not voltas:
+        return None
+    marcas = ", ".join("?" for _ in voltas)
+    estados = [carteira.estado(p) for p in conn.execute(
+        f"SELECT * FROM processo WHERE numero IN ({marcas})", list(voltas))]
+    na_ativa, a_conferir = estados.count("ativa"), estados.count("a_conferir")
+    if not na_ativa + a_conferir:
+        return None
+    return {"quantidade": na_ativa + a_conferir,
+            "aba": "ativa" if na_ativa >= a_conferir else "a_conferir"}
+
+
+def estado_no_arquivo(conn: sqlite3.Connection, p, hoje: date) -> dict:
+    """Bloco da página do processo: estado, faixa do topo, botões possíveis, se o Lex
+    trabalha nele (arquivar e excluir ficam desligados) e o selo «Voltou»."""
+    est = carteira.estado(p)
+    faixa = ""
+    if est == "arquivado_voce":
+        faixa = f"Arquivado por você em {_dia_mes(p['arquivado_por_voce_em'])}"
+    elif est == "arquivado_tribunal":
+        quando = data_br(p["data_arquivamento"])
+        faixa = "Arquivado pelo tribunal" + (f" em {quando}" if quando else "")
+    elif est == "lixeira":
+        faltam = faltam_dias_na_lixeira(p["excluido_em"], hoje)
+        faixa = (f"Na lixeira: some em {_dias(faltam)}" if faltam
+                 else f"Excluído em {data_br(p['excluido_em'])}; já saiu da lixeira")
+    return {"estado": est, "faixa": faixa, "acoes": list(ACOES_POR_ESTADO[est]),
+            "lex_trabalhando": nucleo_quadro.lex_trabalhando(conn, p["numero"]),
+            "voltou_br": _dia_mes(voltas_recentes(conn, hoje).get(p["numero"]))}
+
+
+def selos_de_estado(conn: sqlite3.Connection, numeros: list[str]) -> dict[str, str]:
+    """Para os grupos: número → rótulo de quem está arquivado ou na lixeira."""
+    if not numeros:
+        return {}
+    marcas = ", ".join("?" for _ in numeros)
+    return {p["numero"]: situacao(p) for p in conn.execute(
+        f"SELECT * FROM processo WHERE numero IN ({marcas})", list(numeros))
+        if carteira.estado(p) in ("arquivado_voce", "arquivado_tribunal", "lixeira")}
 
 
 def valor_em_reais(texto: str | None) -> float:
@@ -368,7 +458,7 @@ def linha_do_tempo(conn: sqlite3.Connection, numero: str) -> list[dict]:
 
 def _linha_da_carteira(p, hoje: date) -> dict:
     referencia = data_de_referencia(p)
-    rotulo = carteira.ARQUIVADO if p["arquivado"] else situacao(p)
+    rotulo = situacao(p)  # já cobre o arquivado (tribunal ou você) e a lixeira
     andamento = (p["ultimo_andamento_data"] or "")[:8]
     publicacao = (p["ultima_publicacao_data"] or "")[:8]
     if publicacao and publicacao > andamento:
@@ -385,8 +475,23 @@ def _linha_da_carteira(p, hoje: date) -> dict:
     }
 
 
+def _marcas(p, hoje: date, voltas: dict[str, str], com_lex: set[str]) -> dict:
+    """Estado do processo e selos da lista: «por você» / «pelo tribunal», «faltam N
+    dias», «Voltou» e se o Lex trabalha nele (caixa desligada)."""
+    est = carteira.estado(p)
+    selo = _SELO_ARQUIVADO.get(est, "")
+    if est == "lixeira":
+        selo = f"faltam {_dias(faltam_dias_na_lixeira(p['excluido_em'], hoje))}"
+    return {"estado": est, "selo_estado": selo,
+            "voltou_br": _dia_mes(voltas.get(p["numero"])),
+            "lex_trabalhando": p["numero"] in com_lex}
+
+
 def linhas_da_carteira(conn: sqlite3.Connection, aba: str, hoje: date) -> list[dict]:
-    return [_linha_da_carteira(p, hoje) for p in listar(conn, aba)]
+    voltas = voltas_recentes(conn, hoje)
+    com_lex = nucleo_quadro.numeros_com_lex(conn)
+    return [{**_linha_da_carteira(p, hoje), **_marcas(p, hoje, voltas, com_lex)}
+            for p in listar(conn, aba, hoje)]
 
 
 def normalizar_texto(texto: str | None) -> str:
@@ -421,7 +526,7 @@ def buscar_na_carteira(conn: sqlite3.Connection, termo: str, hoje: date) -> list
     for p in conn.execute("SELECT * FROM processo"):
         textos = [p["cliente"], p["parte_contraria"], *_nomes_das_partes(p["partes_json"])]
         if any(alvo in normalizar_texto(t) for t in textos):
-            ativo = bool((p["advogado_atua"] == 1 or p["confirmado_em"]) and not p["arquivado"])
+            ativo = carteira.estado(p) == "ativa"
             achados.append((ativo, data_de_referencia(p) or "", p))
     achados.sort(key=lambda a: a[2]["numero"])
     achados.sort(key=lambda a: (a[0], a[1]), reverse=True)
@@ -458,15 +563,18 @@ def tribunais(linhas: list[dict]) -> list[str]:
     return sorted({linha["tribunal"] for linha in linhas})
 
 
-def contagens(conn: sqlite3.Connection) -> dict:
-    return {aba: len(listar(conn, aba)) for aba in ("ativa", "a_conferir", "descartados")}
+def contagens(conn: sqlite3.Connection, hoje: date | None = None) -> dict:
+    hoje = hoje or hoje_cuiaba()
+    return {aba: len(listar(conn, aba, hoje))
+            for aba in ("ativa", "a_conferir", "arquivados", "lixeira", "descartados")}
 
 
-def processo_detalhe(conn: sqlite3.Connection, numero: str) -> dict | None:
+def processo_detalhe(conn: sqlite3.Connection, numero: str,
+                     hoje: date | None = None) -> dict | None:
     p = conn.execute("SELECT * FROM processo WHERE numero = ?", (numero,)).fetchone()
     if p is None:
         return None
-    rotulo = carteira.ARQUIVADO if p["arquivado"] else situacao(p)
+    rotulo = situacao(p)
     return {
         "monitoramento": monitoramento(p),
         "partes_publicadas": ([] if p["cliente"] or p["parte_contraria"]
@@ -481,6 +589,7 @@ def processo_detalhe(conn: sqlite3.Connection, numero: str) -> dict | None:
         "linha_do_tempo": linha_do_tempo(conn, numero),
         "erro": p["erro_sincronizacao"] or "",
         "cartoes_lex": cartoes_com_lex(conn, numero),
+        "arquivo": estado_no_arquivo(conn, p, hoje or hoje_cuiaba()),
     }
 
 
@@ -514,6 +623,7 @@ _TEXTOS_EVENTO = {
     "autos_falharam": "falha ao baixar os autos",
     "aviso_detectado": "intimação nova no PJe",
     "varredura_falhou": "varredura falhou",
+    "processo_voltou": "voltou por publicação nova",
 }
 # Texto de "Atividade agora" por (de, para, por); None vale para qualquer um.
 _TEXTOS_MOVIMENTO = {
@@ -525,6 +635,10 @@ _TEXTOS_MOVIMENTO = {
     ("revisao", "lex", None): "devolvido ao Lex com ajuste",
     ("autos", "lex", "sistema"): "enviado ao Lex automaticamente",
     ("autos", "lex", None): "enviado ao Lex",
+    ("resolvida", "acao", "sistema"): "voltou ao quadro; autos pedidos de novo",
+    ("resolvida", "chegou", "sistema"): "voltou ao quadro",
+    ("resolvida", "autos", "sistema"): "voltou ao quadro",
+    ("resolvida", "acompanhar", "sistema"): "voltou ao quadro",
     ("resolvida", "autos", None): "reaberto",
     ("chegou", "resolvida", None): "não é seu; saiu do quadro",
     ("revisao", "protocolado", None): "marcado como protocolado",
@@ -543,6 +657,16 @@ def texto_do_movimento(de: str | None, para: str | None, por: str | None) -> str
         if chave in _TEXTOS_MOVIMENTO:
             return _TEXTOS_MOVIMENTO[chave]
     return "cartão movido"
+
+
+# Cartão que saiu do quadro porque o processo foi arquivado ou excluído (1.5.0).
+_TEXTOS_MOTIVO = {nucleo_quadro.MOTIVO_ARQUIVADO: "processo arquivado; saiu do quadro",
+                  nucleo_quadro.MOTIVO_EXCLUIDO: "processo na lixeira; saiu do quadro"}
+
+
+def _texto_do_motivo(dados: dict) -> str | None:
+    motivo = dados.get("motivo")
+    return _TEXTOS_MOTIVO.get(motivo) if isinstance(motivo, str) else None
 
 
 LIMITE_NOTA = 100_000
@@ -887,6 +1011,10 @@ def quadro(conn: sqlite3.Connection, hoje: date, agora: datetime | None = None) 
             "ORDER BY d.referencia_em, d.id", (chave,)).fetchall()
         colunas.append({"chave": chave, "titulo": nucleo_quadro.COLUNAS[chave],
                         "cartoes": [_cartao(conn, d, hoje, agora) for d in linhas]})
+    com_lex = nucleo_quadro.numeros_com_lex(conn)
+    for coluna in colunas:
+        for c in coluna["cartoes"]:
+            c["lex_no_processo"] = c["numero"] in com_lex  # menu «⋯»: arquivar espera o Lex
     return {"colunas": colunas, "versao": versao(conn),
             "na_triagem": len(colunas[0]["cartoes"]),
             "lex_automatico": config.lex_automatico(conn),
@@ -904,7 +1032,8 @@ def atividade_agora(conn: sqlite3.Connection, limite: int = 8) -> list[dict]:
                           (*tipos, limite)).fetchall():
         dados = json.loads(e["dados"] or "{}")
         if e["tipo"] == "demanda_movida":
-            texto = texto_do_movimento(dados.get("de"), dados.get("para"), dados.get("por"))
+            texto = (_texto_do_motivo(dados)
+                     or texto_do_movimento(dados.get("de"), dados.get("para"), dados.get("por")))
         elif e["tipo"] == "varredura_concluida":
             novidades = dados.get("publicacoes_novas", 0) + dados.get("avisos_novos", 0)
             texto = f"varredura concluída · {novidades} novidade(s)"
@@ -937,6 +1066,8 @@ def _texto_do_evento(tipo: str, dados: dict, com_detalhe: bool = True) -> str | 
 
 def _texto_do_evento_bruto(tipo: str, dados: dict, com_detalhe: bool = True) -> str | None:
     if tipo == "demanda_movida":
+        if _texto_do_motivo(dados):
+            return _texto_do_motivo(dados)
         if (dados.get("de"), dados.get("para")) == ("protocolado", "revisao"):
             return "protocolo desfeito; de volta à sua revisão"
         if (dados.get("de"), dados.get("para"), dados.get("por")) == ("lex", "revisao",

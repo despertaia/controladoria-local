@@ -2,6 +2,16 @@
 
 O que mudou em cada versão, a mais recente primeiro.
 
+## 1.5.0 — 01/11/2026
+
+- Arquivar: tire da carteira ativa um processo que você não quer mais acompanhar. Os cartões sem peça pronta saem do quadro e a Controladoria para de consultá-lo no PJe e de baixar os autos. Se sair publicação nova, ele volta sozinho, com aviso.
+- Excluir: o processo vai para a lixeira por 30 dias, com «Restaurar». Os autos e a pasta do caso nunca são apagados. Se sair publicação nova, ele volta para a carteira (em «A conferir», se a sua OAB não consta nele).
+- Carteira com as abas «Arquivados» (selo «pelo tribunal» ou «por você») e «Lixeira» («faltam N dias»). «Desarquivar» vale também para o arquivado pelo tribunal.
+- Caixas de seleção na carteira: arquive, exclua, desarquive ou restaure até 200 processos de uma vez, com confirmação.
+- No menu «⋯» do cartão: «Arquivar processo» e «Excluir processo»; na página do processo, também «Desarquivar» e «Restaurar». Com o Lex trabalhando no processo, espere ele terminar ou desista do pedido.
+- No Cockpit, uma faixa avisa quantos processos voltaram por publicação nova; na carteira e na página do processo, o selo «Voltou: publicação de dd/mm».
+- A planilha exportada ganhou a aba «Arquivados e lixeira», com o estado na coluna Situação.
+
 ## 1.4.3 — 29/10/2026
 
 - Conectar o Lex: se a Anthropic não aceitar o código, a tela avisa e já abre uma autorização nova. Use só a aba mais recente.

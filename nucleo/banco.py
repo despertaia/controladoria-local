@@ -215,6 +215,14 @@ MIGRACOES = [
     ALTER TABLE demanda ADD COLUMN pasta_nome TEXT NOT NULL DEFAULT '';
     ALTER TABLE demanda ADD COLUMN pasta_arquivos TEXT NOT NULL DEFAULT '[]';
     """,
+    # 8 — 1.5.0 (arquivar e lixeira): o advogado arquiva um processo dele ou o põe na
+    # lixeira (nada é apagado) e desfaz o arquivamento do tribunal, guardando a data que
+    # desfez. Só ADD COLUMN: segura sobre o banco da produção.
+    """
+    ALTER TABLE processo ADD COLUMN arquivado_por_voce_em TEXT;
+    ALTER TABLE processo ADD COLUMN excluido_em TEXT;
+    ALTER TABLE processo ADD COLUMN desarquivado_ref TEXT;
+    """,
 ]
 
 

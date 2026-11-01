@@ -1,6 +1,15 @@
 {% extends "base.html" %}
 {% block titulo %}Carteira · Controladoria{% endblock %}
 {% block conteudo %}
+{# Ações em lote de cada aba: (rota, rótulo, classe do botão). Somem na apresentação. #}
+{% set lote_por_aba = {
+  'ativa': [('carteira_arquivar', 'Arquivar', 'btn-secundario'), ('carteira_excluir', 'Excluir', 'btn-secundario')],
+  'a_conferir': [('carteira_arquivar', 'Arquivar', 'btn-secundario'), ('carteira_excluir', 'Excluir', 'btn-secundario')],
+  'arquivados': [('carteira_desarquivar', 'Desarquivar', ''), ('carteira_excluir', 'Excluir', 'btn-secundario')],
+  'lixeira': [('carteira_restaurar_da_lixeira', 'Restaurar', '')],
+  'descartados': [('carteira_excluir', 'Excluir', 'btn-secundario')],
+} %}
+{% set lote = [] if modo_apresentacao else lote_por_aba[aba] %}
 
 <div class="cabecalho-pagina">
   <div>
@@ -8,6 +17,10 @@
     <h1>Seus processos</h1>
     {% if aba == 'descartados' %}
     <p class="subtitulo">Processos que você tirou da conferência. A varredura segue de olho neles.</p>
+    {% elif aba == 'arquivados' %}
+    <p class="subtitulo">Arquivados pelo tribunal ou por você. O que você arquivou volta sozinho se sair publicação nova.</p>
+    {% elif aba == 'lixeira' %}
+    <p class="subtitulo">Excluídos nos últimos 30 dias. Os autos e a pasta do caso não são apagados.</p>
     {% else %}
     <p class="subtitulo">Onde a sua OAB atua, sem os arquivados.</p>
     {% endif %}
@@ -28,9 +41,9 @@
 </div>
 
 <nav class="abas" aria-label="Abas da carteira">
-  <a href="{{ url_for('carteira_tela', aba='ativa') }}" class="{{ 'ativo' if aba == 'ativa' }}"{% if aba == 'ativa' %} aria-current="page"{% endif %}>Ativa <span class="contador">{{ contagens.ativa }}</span></a>
-  <a href="{{ url_for('carteira_tela', aba='a_conferir') }}" class="{{ 'ativo' if aba == 'a_conferir' }}"{% if aba == 'a_conferir' %} aria-current="page"{% endif %}>A conferir <span class="contador">{{ contagens.a_conferir }}</span></a>
-  {% if contagens.descartados or aba == 'descartados' %}<a href="{{ url_for('carteira_tela', aba='descartados') }}" class="{{ 'ativo' if aba == 'descartados' }}"{% if aba == 'descartados' %} aria-current="page"{% endif %}>Descartados <span class="contador">{{ contagens.descartados }}</span></a>{% endif %}
+  {% for chave, rotulo, sempre in [('ativa', 'Ativa', true), ('a_conferir', 'A conferir', true), ('arquivados', 'Arquivados', false), ('lixeira', 'Lixeira', false), ('descartados', 'Descartados', false)] %}
+  {% if sempre or contagens[chave] or aba == chave %}<a href="{{ url_for('carteira_tela', aba=chave) }}" class="{{ 'ativo' if aba == chave }}"{% if aba == chave %} aria-current="page"{% endif %}>{{ rotulo }} <span class="contador">{{ contagens[chave] }}</span></a>{% endif %}
+  {% endfor %}
 </nav>
 
 {% if aba == 'ativa' and not modo_apresentacao %}
@@ -59,11 +72,23 @@
   </select>
 </form>
 
+{% if lote and linhas %}
+<form id="lote" method="post" action="{{ url_for(lote[0][0]) }}" class="barra-lote">
+  <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+  <input type="hidden" name="voltar" value="{{ request.full_path.rstrip('?') }}">
+  <span class="barra-lote-contador" data-contador aria-live="polite">Nenhum selecionado</span>
+  {% for rota, rotulo, classe in lote %}
+  <button type="submit" class="btn btn-pequeno {{ classe }}" formaction="{{ url_for(rota) }}" data-verbo="{{ rotulo }}" disabled>{{ rotulo }}</button>
+  {% endfor %}
+</form>
+{% endif %}
+
 {% if linhas %}
 <div class="tabela-wrap tabela-wrap-carteira">
 <table class="tabela tabela-carteira{{ ' com-acao' if aba in ('a_conferir', 'descartados') }}">
   <thead>
     <tr>
+      {% if lote %}<th class="selecao"><input type="checkbox" id="selecionar-todos" aria-label="Selecionar todos"></th>{% endif %}
       <th>Processo</th>
       <th>Cliente</th>
       <th>Parte contrária</th>
@@ -76,6 +101,7 @@
   <tbody>
     {% for p in linhas %}
     <tr data-href="{{ url_for('processo', numero=p.numero) }}">
+      {% if lote %}<td class="selecao"><input type="checkbox" form="lote" name="numero" value="{{ p.numero }}" aria-label="Selecionar {{ p.numero_formatado }}"{% if p.lex_trabalhando %} disabled title="Espere o Lex terminar ou desista do pedido."{% endif %}></td>{% endif %}
       <td>
         <a class="numero" href="{{ url_for('processo', numero=p.numero) }}">{{ p.numero_formatado }}</a>
         <span class="tag">{{ p.tribunal }}{% if p.orgao %} · {{ p.orgao }}{% endif %}</span>
@@ -89,7 +115,11 @@
       <td class="num" data-rotulo="Parado">
         {% if p.dias_parado is not none %}<span class="{{ 'tom-aviso' if p.dias_parado > 90 }}">{{ p.dias_parado }} d</span>{% else %}—{% endif %}
       </td>
-      <td data-rotulo="Situação"><span class="selo selo-{{ p.tom }}">{{ p.situacao }}</span></td>
+      <td data-rotulo="Situação">
+        {% if p.estado in ('arquivado_voce', 'arquivado_tribunal') %}<span class="selo selo-neutro">Arquivado</span> <span class="selo selo-aviso">{{ p.selo_estado }}</span>
+        {% else %}<span class="selo selo-{{ p.tom }}">{{ p.situacao }}</span>{% if p.selo_estado %} <span class="selo selo-aviso">{{ p.selo_estado }}</span>{% endif %}{% endif %}
+        {% if p.voltou_br and p.estado in ('ativa', 'a_conferir') %} <span class="selo selo-ok">Voltou: publicação de {{ p.voltou_br }}</span>{% endif %}
+      </td>
       {% if aba in ('a_conferir', 'descartados') %}
       <td class="acao">
         {% if aba == 'a_conferir' %}
@@ -122,7 +152,7 @@
   // Linha inteira clicável; filtro instantâneo enquanto digita (Enter filtra no servidor).
   document.querySelectorAll('tr[data-href]').forEach(function (tr) {
     tr.addEventListener('click', function (e) {
-      if (e.target.closest('a, button, form')) return;
+      if (e.target.closest('a, button, form, input, label')) return;
       window.location = tr.dataset.href;
     });
   });
@@ -133,7 +163,7 @@
       var visiveis = 0;
       document.querySelectorAll('.tabela-carteira tbody tr').forEach(function (tr) {
         var texto = Array.prototype.map.call(tr.children, function (td) {
-          return td.classList.contains('acao') ? '' : td.textContent;
+          return (td.classList.contains('acao') || td.classList.contains('selecao')) ? '' : td.textContent;
         }).join(' ');
         var aparece = texto.toLowerCase().indexOf(termo) > -1;
         tr.style.display = aparece ? '' : 'none';
@@ -143,6 +173,47 @@
       if (vazio) vazio.hidden = visiveis > 0;
     });
   }
+  // Ações em lote: contador, "selecionar todos" (só as linhas visíveis), botões ligados com
+  // 1 a 200 marcados e confirmação ("Arquivar 5 processos?").
+  (function () {
+    var lote = document.getElementById('lote');
+    if (!lote) return;
+    var LIMITE = 200;
+    var caixas = Array.prototype.slice.call(document.querySelectorAll('input[form="lote"][name="numero"]'));
+    var todas = document.getElementById('selecionar-todos');
+    var contador = lote.querySelector('[data-contador]');
+    var botoes = Array.prototype.slice.call(lote.querySelectorAll('button[data-verbo]'));
+    var ultimo = null;
+    function marcadas() {
+      return caixas.filter(function (c) { return c.checked && !c.disabled; });
+    }
+    function atualizar() {
+      var n = marcadas().length;
+      contador.textContent = !n ? 'Nenhum selecionado'
+        : n > LIMITE ? n + ' selecionados: escolha até ' + LIMITE
+        : (n === 1 ? '1 selecionado' : n + ' selecionados');
+      botoes.forEach(function (b) { b.disabled = !n || n > LIMITE; });
+    }
+    caixas.forEach(function (c) { c.addEventListener('change', atualizar); });
+    if (todas) {
+      todas.addEventListener('change', function () {
+        caixas.forEach(function (c) {
+          if (!c.disabled && c.closest('tr').style.display !== 'none') c.checked = todas.checked;
+        });
+        atualizar();
+      });
+    }
+    botoes.forEach(function (b) { b.addEventListener('click', function () { ultimo = b; }); });
+    lote.addEventListener('submit', function (e) {
+      var botao = e.submitter || ultimo;
+      var n = marcadas().length;
+      var verbo = botao ? botao.dataset.verbo : 'Confirmar';
+      if (!n || !window.confirm(verbo + ' ' + n + (n === 1 ? ' processo?' : ' processos?'))) {
+        e.preventDefault();
+      }
+    });
+    atualizar();
+  })();
 </script>
 
 {% endblock %}

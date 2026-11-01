@@ -90,7 +90,8 @@ def test_linhas_da_carteira_e_filtros(conn):
     assert len(pd.filtrar(linhas, tribunal="TRF1")) == 5
     assert len(pd.filtrar(linhas, busca="0000013")) == 1
     assert pd.tribunais(linhas) == ["TJMT", "TRF1"]
-    assert pd.contagens(conn) == {"ativa": 17, "a_conferir": 5, "descartados": 0}
+    assert pd.contagens(conn, HOJE) == {"ativa": 17, "a_conferir": 5, "arquivados": 4,
+                                        "lixeira": 1, "descartados": 0}
 
 
 def test_linha_do_trf1_mostra_publicacao(conn):
@@ -876,3 +877,151 @@ def test_varredura_sem_internet_vira_um_aviso_so():
 ])
 def test_outras_falhas_continuam_detalhadas(dados):
     assert pd.sem_conexao(dados) is False
+
+
+# --- 1.5.0: arquivados, lixeira, selos e a faixa do Cockpit -----------------------------
+
+from datetime import timedelta  # noqa: E402
+
+from nucleo import eventos  # noqa: E402
+
+
+def _marcar(conn, numero, coluna, quando="2026-10-01T09:00:00-04:00"):
+    with conn:
+        conn.execute(f"UPDATE processo SET {coluna} = ? WHERE numero = ?", (quando, numero))
+
+
+def _voltou(conn, numero, quando="2026-10-05T06:00:00-04:00", data="2026-10-04"):
+    with conn:
+        eventos.registrar(conn, "processo_voltou", numero,
+                          {"de": "arquivado", "publicacao": 1, "data": data}, quando=quando)
+
+
+def _um_processo(atua=1):
+    c = banco.conectar(":memory:")
+    a = "00000010220248110041"
+    c.execute("INSERT INTO processo (numero, tribunal, advogado_atua) VALUES (?, 'TJMT', ?)",
+              (a, atua))
+    return c, a
+
+
+def test_contadores_do_cockpit_ignoram_arquivado_por_voce_e_excluido(conn):
+    antes = pd.kpis(conn, HOJE)
+    _marcar(conn, banco_demo._tjmt(1), "arquivado_por_voce_em")
+    _marcar(conn, banco_demo._tjmt(2), "excluido_em")
+    depois = pd.kpis(conn, HOJE)
+    assert depois["ativos"] == antes["ativos"] - 2
+    assert depois["movimentaram_7d"] == antes["movimentaram_7d"] - 2
+    assert depois["publicacoes_30d"] == antes["publicacoes_30d"] - 2
+    assert len(pd.linhas_da_carteira(conn, "ativa", HOJE)) == antes["ativos"] - 2
+    assert sum(t["quantidade"] for t in pd.por_tribunal(conn)) == antes["ativos"] - 2
+
+
+def test_abas_arquivados_e_lixeira_com_selos(conn):
+    _marcar(conn, banco_demo._tjmt(1), "arquivado_por_voce_em")
+    _marcar(conn, banco_demo._tjmt(4), "excluido_em")
+    arquivados = {l["numero"]: l for l in pd.linhas_da_carteira(conn, "arquivados", HOJE)}
+    meu = arquivados[banco_demo._tjmt(1)]
+    assert (meu["estado"], meu["selo_estado"], meu["situacao"]) == (
+        "arquivado_voce", "por você", "Arquivado por você")
+    assert arquivados[banco_demo._tjmt(17)]["selo_estado"] == "pelo tribunal"
+    lixeira = {l["numero"]: l for l in pd.linhas_da_carteira(conn, "lixeira", HOJE)}
+    excluido = lixeira[banco_demo._tjmt(4)]
+    assert (excluido["selo_estado"], excluido["situacao"]) == ("faltam 25 dias", "Na lixeira")
+    assert excluido["lex_trabalhando"] is False and excluido["voltou_br"] == ""
+    c = pd.contagens(conn, HOJE)
+    assert set(c) == {"ativa", "a_conferir", "arquivados", "lixeira", "descartados"}
+    assert c["arquivados"] == len(arquivados) and c["lixeira"] == len(lixeira)
+
+
+def test_faltam_dias_na_lixeira():
+    assert pd.faltam_dias_na_lixeira("2026-10-06T09:00:00-04:00", HOJE) == 30
+    assert pd.faltam_dias_na_lixeira("2026-09-07T09:00:00-04:00", HOJE) == 1
+    assert pd.faltam_dias_na_lixeira("2026-08-01T09:00:00-04:00", HOJE) == 0
+    assert pd.faltam_dias_na_lixeira(None, HOJE) == 0
+
+
+def test_selo_voltou_por_7_dias_e_faixa_do_cockpit(conn):
+    numero = banco_demo._tjmt(3)
+    _voltou(conn, numero)
+    linha = next(l for l in pd.linhas_da_carteira(conn, "ativa", HOJE) if l["numero"] == numero)
+    assert linha["voltou_br"] == "04/10"
+    assert pd.processo_detalhe(conn, numero, HOJE)["arquivo"]["voltou_br"] == "04/10"
+    faixa = pd.faixa_voltaram(conn, HOJE)
+    assert faixa["aba"] == "ativa" and faixa["quantidade"] >= 1
+    depois = HOJE + timedelta(days=7)
+    linha = next(l for l in pd.linhas_da_carteira(conn, "ativa", depois) if l["numero"] == numero)
+    assert linha["voltou_br"] == ""
+    assert pd.faixa_voltaram(conn, depois) is None
+
+
+def test_faixa_ignora_quem_voltou_e_foi_arquivado_de_novo():
+    c, a = _um_processo()
+    _voltou(c, a)
+    assert pd.faixa_voltaram(c, HOJE) == {"quantidade": 1, "aba": "ativa"}
+    c.execute("UPDATE processo SET arquivado_por_voce_em = '2026-10-06T08:00:00-04:00'")
+    assert pd.faixa_voltaram(c, HOJE) is None
+    c.execute("UPDATE processo SET arquivado_por_voce_em = NULL, advogado_atua = 0")
+    assert pd.faixa_voltaram(c, HOJE) == {"quantidade": 1, "aba": "a_conferir"}
+
+
+@pytest.mark.parametrize("sql, estado, acoes, faixa", [
+    ("UPDATE processo SET arquivado = 0", "ativa", ["arquivar", "excluir"], ""),
+    ("UPDATE processo SET advogado_atua = 0", "a_conferir", ["arquivar", "excluir"], ""),
+    ("UPDATE processo SET advogado_atua = 0, descartado_em = 'x'", "descartado",
+     ["excluir"], ""),
+    ("UPDATE processo SET arquivado_por_voce_em = '2026-10-01T09:00:00-04:00'",
+     "arquivado_voce", ["desarquivar", "excluir"], "Arquivado por você em 01/10"),
+    ("UPDATE processo SET arquivado = 1, data_arquivamento = '20260716'",
+     "arquivado_tribunal", ["desarquivar", "excluir"], "Arquivado pelo tribunal em 16/07/2026"),
+    ("UPDATE processo SET excluido_em = '2026-10-01T09:00:00-04:00'", "lixeira",
+     ["restaurar"], "Na lixeira: some em 25 dias"),
+    ("UPDATE processo SET excluido_em = '2026-09-07T09:00:00-04:00'", "lixeira",
+     ["restaurar"], "Na lixeira: some em 1 dia"),
+    ("UPDATE processo SET excluido_em = '2026-08-01T09:00:00-04:00'", "lixeira",
+     ["restaurar"], "Excluído em 01/08/2026; já saiu da lixeira"),
+])
+def test_processo_detalhe_traz_estado_acoes_e_faixa(sql, estado, acoes, faixa):
+    c, a = _um_processo()
+    c.execute(sql)
+    arquivo = pd.processo_detalhe(c, a, HOJE)["arquivo"]
+    assert (arquivo["estado"], arquivo["acoes"], arquivo["faixa"]) == (estado, acoes, faixa)
+    assert arquivo["lex_trabalhando"] is False and arquivo["voltou_br"] == ""
+
+
+def test_processo_detalhe_e_cartao_sabem_do_lex():
+    from nucleo import quadro
+    c, a = _um_processo()
+    quadro.adicionar_item(c, a, "publicacao", "1", "2026-10-05")
+    q = pd.quadro(c, HOJE)
+    assert q["colunas"][0]["cartoes"][0]["lex_no_processo"] is False
+    c.execute("INSERT INTO demanda (numero, coluna, referencia_em, criada_em, atualizada_em, "
+              "lex_estado) VALUES (?, 'lex', '2026-10-01', 'x', 'x', 'na_fila')", (a,))
+    assert pd.processo_detalhe(c, a, HOJE)["arquivo"]["lex_trabalhando"] is True
+    q = pd.quadro(c, HOJE)
+    assert q["colunas"][0]["cartoes"][0]["lex_no_processo"] is True
+
+
+def test_atividade_fala_de_arquivar_e_da_volta():
+    from nucleo import acoes_processo
+    c, a = _quadro_basico()
+    with c:
+        acoes_processo.aplicar(c, "arquivar", [a])
+    assert "processo arquivado; saiu do quadro" in [i["texto"] for i in pd.atividade_agora(c)]
+    with c:
+        eventos.registrar(c, "processo_voltou", a,
+                          {"de": "arquivado", "publicacao": 1, "data": "2026-10-05"})
+    assert pd.atividade_agora(c)[0]["texto"] == "voltou por publicação nova"
+    assert pd._texto_do_evento("demanda_movida", {"de": "chegou", "para": "resolvida",
+                                                  "por": "sistema", "motivo": "excluido"}) == (
+        "processo na lixeira; saiu do quadro")
+    c.close()
+
+
+def test_selos_de_estado_para_os_grupos(conn):
+    _marcar(conn, banco_demo._tjmt(1), "arquivado_por_voce_em")
+    selos = pd.selos_de_estado(conn, [banco_demo._tjmt(1), banco_demo._tjmt(17),
+                                      banco_demo._tjmt(3), "99999999999999999999"])
+    assert selos == {banco_demo._tjmt(1): "Arquivado por você",
+                     banco_demo._tjmt(17): "Arquivado"}
+    assert pd.selos_de_estado(conn, []) == {}

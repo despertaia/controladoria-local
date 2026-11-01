@@ -22,11 +22,11 @@ MOVIMENTOS = {
     ("chegou", "acao"): ("advogado",),
     ("chegou", "acompanhar"): ("advogado",),
     ("acao", "autos"): ("trabalhador",),
-    ("autos", "resolvida"): ("advogado",),
+    ("autos", "resolvida"): ("advogado", "sistema"),
     ("acompanhar", "chegou"): ("advogado",),
     ("acao", "chegou"): ("advogado",),
     ("autos", "chegou"): ("advogado",),
-    ("resolvida", "autos"): ("advogado",),
+    ("resolvida", "autos"): ("advogado", "sistema"),
     ("autos", "lex"): ("advogado", "sistema"),
     ("lex", "autos"): ("advogado", "mac"),
     ("lex", "revisao"): ("mac", "advogado"),  # advogado: "Desistir do ajuste"
@@ -35,8 +35,14 @@ MOVIMENTOS = {
     ("protocolado", "revisao"): ("advogado",),
     # "Não é meu" (processo descartado pelo advogado): o cartão da triagem vai para
     # Resolvido e sai da vista; restaurar ou confirmar o processo o traz de volta.
-    ("chegou", "resolvida"): ("advogado",),
-    ("resolvida", "chegou"): ("advogado",),
+    ("chegou", "resolvida"): ("advogado", "sistema"),
+    ("resolvida", "chegou"): ("advogado", "sistema"),
+    # Arquivar ou excluir o processo (1.5.0): o sistema tira os cartões sem peça pronta e
+    # os devolve ao desarquivar ou restaurar. O advogado não faz estes à mão.
+    ("acao", "resolvida"): ("sistema",),
+    ("acompanhar", "resolvida"): ("sistema",),
+    ("resolvida", "acao"): ("sistema",),
+    ("resolvida", "acompanhar"): ("sistema",),
 }
 # Movimento → para onde o "Desfazer" leva de volta.
 DESFAZER = {("chegou", "acao"): "chegou", ("chegou", "acompanhar"): "chegou",
@@ -48,8 +54,17 @@ AUTOS_ESTADOS = ("", "na_fila", "baixando", "ok", "falhou")
 PASTA_ESTADOS = ("", "faltam", "na_pasta")
 PASTA_MAX_ARQUIVOS = 50
 PASTA_MAX_NOME = 200
-# Marca, no evento do movimento, o cartão que foi para Resolvido pelo "Não é meu".
+# Marca, no evento do movimento, por que o cartão foi para Resolvido sem o advogado
+# resolvê-lo: "Não é meu" (processo descartado) ou processo arquivado/excluído (1.5.0).
 MOTIVO_NAO_E_MEU = "nao_e_meu"
+MOTIVO_ARQUIVADO = "arquivado"
+MOTIVO_EXCLUIDO = "excluido"
+# Evento da carteira registrado logo antes de tirar os cartões com o motivo
+# (carteira.arquivar / carteira.excluir).
+_EVENTO_DO_MOTIVO = {MOTIVO_ARQUIVADO: "processo_arquivado", MOTIVO_EXCLUIDO: "processo_excluido"}
+# Colunas de onde o cartão sai ao arquivar ou excluir o processo. "Lex minutando" impede a
+# ação (lex_trabalhando); "Sua revisão" e "Protocolado" ficam (há peça pronta).
+SAEM_AO_ARQUIVAR = ("chegou", "acao", "autos", "acompanhar")
 # Estados do Lex em que o cartão está parado (ninguém trabalhando nele agora).
 LEX_PARADO = ("na_fila", "falhou", "pausado_limite")
 # Tudo o que o Lex guarda no cartão; volta ao vazio quando o cartão volta à triagem.
@@ -63,13 +78,26 @@ class MovimentoInvalido(ValueError):
 
 
 def processo_elegivel(conn: sqlite3.Connection, numero: str) -> bool:
-    """Gera cartão: está na carteira, não está arquivado e não foi descartado
-    (descartado que passou a ter a OAB do advogado volta a valer)."""
-    p = conn.execute("SELECT arquivado, advogado_atua, descartado_em FROM processo "
-                     "WHERE numero = ?", (numero,)).fetchone()
-    if p is None or p["arquivado"]:
+    """Gera cartão: está no banco, não está arquivado (pelo tribunal ou por você), não está
+    na lixeira e não foi descartado (descartado que passou a ter a OAB do advogado volta a
+    valer)."""
+    p = conn.execute("SELECT arquivado, advogado_atua, descartado_em, arquivado_por_voce_em, "
+                     "excluido_em FROM processo WHERE numero = ?", (numero,)).fetchone()
+    if p is None or p["arquivado"] or p["arquivado_por_voce_em"] or p["excluido_em"]:
         return False
     return not (p["descartado_em"] and p["advogado_atua"] != 1)
+
+
+def lex_trabalhando(conn: sqlite3.Connection, numero: str) -> bool:
+    """Há cartão do processo em "Lex minutando" (na fila ou trabalhando): arquivar e
+    excluir esperam o Lex terminar ou o advogado desistir do pedido."""
+    return conn.execute("SELECT 1 FROM demanda WHERE numero = ? AND coluna = 'lex' LIMIT 1",
+                        (numero,)).fetchone() is not None
+
+
+def numeros_com_lex(conn: sqlite3.Connection) -> set[str]:
+    """Os processos com cartão em "Lex minutando" (uma consulta para a lista inteira)."""
+    return {r[0] for r in conn.execute("SELECT DISTINCT numero FROM demanda WHERE coluna = 'lex'")}
 
 
 def publicacao_gera_cartao(conn: sqlite3.Connection, numero: str, data_iso: str,
@@ -144,6 +172,13 @@ def mover(conn: sqlite3.Connection, demanda_id: int, para: str, por: str, *,
         # De volta à triagem: o cartão recomeça sem nada do Lex (estado, pedidos, squad).
         campos.update(autos_estado="", autos_detalhe="", pasta_estado="",
                       pasta_arquivos="[]", **CAMPOS_LEX_VAZIOS)
+    if de == "acao" and para == "resolvida":
+        # Processo arquivado ou excluído: a busca de autos que não começou sai da fila; a
+        # que já começou termina e, vendo o cartão fora de "Precisa de ação", não mexe em
+        # mais nada (autos._ainda_em_acao).
+        tarefas_fila.cancelar(conn, "autos", str(demanda_id))
+        if d["autos_estado"] != "baixando":
+            campos.update(autos_estado="", autos_detalhe="")
     if para == "acao":
         campos.update(autos_estado="na_fila", autos_detalhe="")
         tarefas_fila.pedir(conn, "autos", str(demanda_id), por)
@@ -206,27 +241,47 @@ def mover(conn: sqlite3.Connection, demanda_id: int, para: str, por: str, *,
     return {"de": de, "para": para, "desfazer": DESFAZER.get((de, para))}
 
 
-def tirar_do_quadro(conn: sqlite3.Connection, numero: str, por: str = "advogado") -> list[int]:
-    """"Não é meu": os cartões do processo que podem ir para Resolvido (triagem e autos
-    baixados) vão, marcados com MOTIVO_NAO_E_MEU. Cartão no Lex, na revisão ou
-    protocolado fica onde está (há trabalho em curso). Devolve os ids movidos."""
+def tirar_do_quadro(conn: sqlite3.Connection, numero: str, por: str = "advogado",
+                    motivo: str = MOTIVO_NAO_E_MEU) -> list[int]:
+    """Leva para Resolvido os cartões do processo, marcados com `motivo`. "Não é meu": só
+    os que o advogado pode mandar para Resolvido (triagem e autos baixados). Arquivar ou
+    excluir (MOTIVO_ARQUIVADO, MOTIVO_EXCLUIDO): os de SAEM_AO_ARQUIVAR, movidos pelo
+    "sistema" (a busca de autos na fila é cancelada). Cartão no Lex, na revisão ou
+    protocolado fica onde está. Devolve os ids movidos."""
     movidos = []
     for d in conn.execute("SELECT id, coluna FROM demanda WHERE numero = ? ORDER BY id",
                           (numero,)).fetchall():
-        if por in MOVIMENTOS.get((d["coluna"], "resolvida"), ()):
-            mover(conn, d["id"], "resolvida", por, motivo=MOTIVO_NAO_E_MEU)
-            movidos.append(d["id"])
+        if motivo == MOTIVO_NAO_E_MEU:
+            if por not in MOVIMENTOS.get((d["coluna"], "resolvida"), ()):
+                continue
+            quem = por
+        elif d["coluna"] in SAEM_AO_ARQUIVAR:
+            quem = "sistema"
+        else:
+            continue
+        mover(conn, d["id"], "resolvida", quem, motivo=motivo)
+        movidos.append(d["id"])
     return movidos
 
 
-def devolver_ao_quadro(conn: sqlite3.Connection, numero: str,
-                       por: str = "advogado") -> list[int]:
-    """Desfaz o "Não é meu" (processo restaurado ou confirmado): cada cartão que foi
-    para Resolvido por esse motivo, e não mexeu mais desde então, volta à coluna de
-    onde saiu, se o movimento de volta for permitido agora. Devolve os ids movidos."""
+def devolver_ao_quadro(conn: sqlite3.Connection, numero: str, por: str = "advogado",
+                       motivo: str = MOTIVO_NAO_E_MEU) -> list[int]:
+    """Desfaz o `tirar_do_quadro` do mesmo motivo (processo restaurado, confirmado,
+    desarquivado ou tirado da lixeira): cada cartão que foi para Resolvido por esse
+    motivo, e não mexeu mais desde então, volta à coluna de onde saiu, se o movimento de
+    volta for permitido agora (o que volta para "Precisa de ação" pede os autos de novo).
+    Com os motivos novos, quem move é o "sistema" e só contam os movimentos depois do
+    último arquivamento/exclusão do processo: os cartões de uma vez anterior ficaram em
+    Resolvido quando ele voltou por publicação nova e não voltam agora. Do mais novo ao
+    mais antigo, para o cartão novo ficar com a vaga da triagem. Devolve os ids movidos."""
+    quem = por if motivo == MOTIVO_NAO_E_MEU else "sistema"
+    desde = 0
+    if motivo in _EVENTO_DO_MOTIVO:
+        desde = conn.execute("SELECT COALESCE(MAX(id), 0) FROM evento WHERE tipo = ? "
+                             "AND numero = ?", (_EVENTO_DO_MOTIVO[motivo], numero)).fetchone()[0]
     ultimo: dict[int, dict] = {}
     for e in conn.execute("SELECT dados FROM evento WHERE tipo = 'demanda_movida' "
-                          "AND numero = ? ORDER BY id", (numero,)).fetchall():
+                          "AND numero = ? AND id > ? ORDER BY id", (numero, desde)).fetchall():
         try:
             dados = json.loads(e["dados"] or "{}")
         except ValueError:
@@ -234,17 +289,18 @@ def devolver_ao_quadro(conn: sqlite3.Connection, numero: str,
         if isinstance(dados, dict) and isinstance(dados.get("demanda"), int):
             ultimo[dados["demanda"]] = dados
     devolvidos = []
+    ordem = "id" if motivo == MOTIVO_NAO_E_MEU else "id DESC"
     for d in conn.execute("SELECT id FROM demanda WHERE numero = ? AND coluna = 'resolvida' "
-                          "ORDER BY id", (numero,)).fetchall():
+                          f"ORDER BY {ordem}", (numero,)).fetchall():
         dados = ultimo.get(d["id"]) or {}
-        if dados.get("motivo") != MOTIVO_NAO_E_MEU or dados.get("para") != "resolvida":
+        if dados.get("motivo") != motivo or dados.get("para") != "resolvida":
             continue
         try:
-            mover(conn, d["id"], dados.get("de") or "chegou", por)
+            mover(conn, d["id"], dados.get("de") or "chegou", quem)
         except MovimentoInvalido:
             continue  # ex.: já chegou outro cartão do processo na triagem
         devolvidos.append(d["id"])
-    return devolvidos
+    return sorted(devolvidos)
 
 
 def marcar_autos(conn: sqlite3.Connection, demanda_id: int, estado: str,

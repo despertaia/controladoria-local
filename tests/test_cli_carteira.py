@@ -8,6 +8,9 @@ def test_exportar_com_banco_vazio(tmp_path, monkeypatch):
     saida = tmp_path / "Carteira.xlsx"
     assert cli.main(["exportar", "--saida", str(saida)]) == 0
     assert saida.exists()
+    import openpyxl
+    assert openpyxl.load_workbook(saida).sheetnames == [
+        "Carteira", "A conferir", "Arquivados e lixeira"]
 
 
 def test_atualizar_sem_configuracao(tmp_path, monkeypatch, capsys):

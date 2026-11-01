@@ -672,3 +672,24 @@ a.numero:hover { color: var(--latao-forte); }
 @media (max-width: 640px) {
   .linha-tribunal { grid-template-columns: 1fr; }
 }
+
+/* 1.5.0: arquivar e lixeira — lote na carteira, menu do cartão e faixas de estado */
+.barra-lote { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 0 0 12px; padding: 8px 12px; border: 1px solid var(--linha); border-radius: 6px; background: var(--cartao); }
+.barra-lote-contador { margin-right: auto; font-size: 13px; color: var(--cinza); }
+.tabela-carteira th.selecao, .tabela-carteira td.selecao { width: 1%; padding-right: 0; }
+.tabela-carteira .selecao input { width: 16px; height: 16px; cursor: pointer; }
+.tabela-carteira .selecao input:disabled { cursor: not-allowed; }
+.cartao-menu { display: inline-block; }
+.cartao-menu > summary { list-style: none; cursor: pointer; user-select: none; }
+.cartao-menu > summary::-webkit-details-marker { display: none; }
+.cartao-menu[open] { flex: 1 1 100%; }
+.cartao-menu-itens { display: grid; gap: 6px; margin-top: 8px; }
+.cartao-menu-itens form { margin: 0; }
+.cartao-menu-itens button { width: 100%; text-align: left; }
+.cartao-menu-nota { margin: 0; font-size: 12px; color: var(--cinza); }
+.acoes-arquivo { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
+.acoes-arquivo form { margin: 0; }
+@media (max-width: 1180px) {
+  .tabela-carteira td.selecao { padding-bottom: 4px; }
+  .acoes-arquivo { justify-content: flex-start; }
+}

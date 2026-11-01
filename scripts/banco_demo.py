@@ -48,7 +48,7 @@ ORGAOS = ["1ª Vara Cível de Cuiabá", "3ª Vara Cível de Cuiabá",
 ARQUIVADOS = ["HELENA PRADO", "OTÁVIO BRANDÃO", "SÍLVIA MATOS"]
 VARREDURA = "T06:00:00-04:00"
 # Sobe quando a demonstração ganha dado novo: o painel_demo.sh recria a demo antiga.
-DEMO_VERSAO = 6
+DEMO_VERSAO = 7
 CHAVE_DEMO = "demo_versao"
 CHAVE_GERADA_EM = "demo_gerada_em"
 VALIDADE_DEMO = timedelta(hours=1)  # além disso (ou em outro dia) o painel_demo.sh regenera
@@ -75,6 +75,12 @@ CLIENTES_TRF1 = {
     17: ("HELENO AUGUSTO PAIVA", "UNIÃO FEDERAL"),
 }
 TRF1_NA_PASTA = 17  # processo só da demonstração das pastas do caso
+# Arquivar e lixeira (1.5.0), índices de _tjmt: um arquivado por você, um na lixeira, um
+# excluído há mais de 30 dias (já fora da aba) e um ativo que voltou por publicação nova.
+ARQUIVADO_POR_VOCE = 26
+NA_LIXEIRA = 27
+EXCLUIDO_ANTIGO = 28
+VOLTOU = 2
 
 
 def _tjmt(n: int) -> str:
@@ -462,6 +468,40 @@ def _demonstrar_o_lex(conn, relogio, hoje: date, agora: datetime, pecas_dir: str
     ponte.registrar_contato(conn)
 
 
+def _demonstrar_arquivo(conn, hoje: date) -> None:
+    """Um processo em cada estado da 1.5.0, com as marcas e os eventos em horários fixos
+    (a geração continua determinística)."""
+    def marca(dias: int) -> str:
+        return (hoje - timedelta(days=dias)).isoformat() + "T09:00:00-04:00"
+
+    numero = _tjmt(ARQUIVADO_POR_VOCE)
+    cliente, contraria = "BEATRIZ FONTES CRUZ", "CONSTRUTORA HORIZONTE LTDA"
+    _inserir_processo(
+        conn, numero=numero, tribunal="TJMT", instancia="1grau", classe="7",
+        orgao_julgador=ORGAOS[1], cliente=cliente, parte_contraria=contraria,
+        polo_cliente="Polo Ativo", advogado_atua=1, arquivado=0,
+        ultimo_andamento_data=(hoje - timedelta(days=40)).strftime("%Y%m%d"),
+        ultimo_andamento_texto="Expedição de alvará",
+        partes_json=json.dumps(_partes(cliente, contraria), ensure_ascii=False),
+        fontes='["djen"]', arquivado_por_voce_em=marca(10))
+    eventos.registrar(conn, "processo_arquivado", numero, quando=marca(10))
+    for k, dias in ((NA_LIXEIRA, 5), (EXCLUIDO_ANTIGO, 40)):
+        numero = _tjmt(k)
+        _inserir_processo(conn, numero=numero, tribunal="TJMT", advogado_atua=0, arquivado=0,
+                          orgao_julgador=ORGAOS[2], fontes='["sistema:grupo"]',
+                          excluido_em=marca(dias))
+        eventos.registrar(conn, "processo_excluido", numero, quando=marca(dias))
+    numero = _tjmt(VOLTOU)
+    pub = conn.execute("SELECT id, data_disponibilizacao FROM publicacao WHERE numero = ? "
+                       "ORDER BY data_disponibilizacao DESC, id DESC LIMIT 1",
+                       (numero,)).fetchone()
+    eventos.registrar(conn, "processo_arquivado", numero, quando=marca(20))
+    eventos.registrar(conn, "processo_voltou", numero,
+                      {"de": "arquivado", "publicacao": pub["id"],
+                       "data": pub["data_disponibilizacao"]},
+                      quando=hoje.isoformat() + "T05:50:00-04:00")
+
+
 def situacao(caminho: str) -> str:
     """Lê (sem migrar nem alterar) um banco: "atual" se é a demonstração desta versão,
     "antiga" se é uma demonstração de versão anterior e "outro" se não é demonstração
@@ -519,9 +559,10 @@ def desatualizada(caminho: str, agora: datetime | None = None) -> bool:
 
 def gerar(conn, hoje: date, pecas_dir: str | None = None,
           agora: datetime | None = None) -> None:
-    """Preenche um banco vazio com 24 processos fictícios: 12 ativos no TJMT,
+    """Preenche um banco vazio com 28 processos fictícios: 12 ativos no TJMT,
     4 no TRF1 só pelo DJEN, 3 arquivados, 3 de terceiros, 1 sem acesso e 1 do TRF1 a
-    conferir (publicação longa, com as partes); mais o quadro
+    conferir (publicação longa, com as partes); um arquivado por você, dois na lixeira (um
+    já fora da aba) e um que voltou por publicação nova; mais o quadro
     com o Lex em todos os estados. Os arquivos das peças fictícias vão para `pecas_dir`
     (padrão: CONTROLADORIA_PECAS ou dados/demo-pecas). `agora` ancora o que está
     "acontecendo agora" (padrão: `hoje` às 10h): para o mesmo par, a saída é idêntica."""
@@ -624,6 +665,8 @@ def gerar(conn, hoje: date, pecas_dir: str | None = None,
             conn, numero=numero, tribunal="TRF1", advogado_atua=1, arquivado=0,
             ultima_publicacao_data=(hoje - timedelta(days=4)).strftime("%Y%m%d"),
             fontes='["djen"]')
+
+        _demonstrar_arquivo(conn, hoje)
 
         with _Relogio(_quando(hoje, 6, 0)) as relogio:
             # Quadro fictício: cartões em todas as colunas, uma falha de autos e a

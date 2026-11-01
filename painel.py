@@ -51,6 +51,7 @@ from captura.mni_client import (  # noqa: E402
 from captura.processo_parser import (  # noqa: E402
     classificar_lista, formatar_numero_cnj, validar_cnj,
 )
+from nucleo import acoes_processo  # noqa: E402
 from nucleo import apresentacao  # noqa: E402
 from nucleo import banco  # noqa: E402
 from nucleo import djen  # noqa: E402
@@ -210,6 +211,8 @@ _INDISPONIVEIS_NA_APRESENTACAO = {
     "grupo_detalhe", "grupo_status", "grupo_baixar", "grupo_atualizar", "grupo_excluir",
     "grupo_incluir", "grupo_retirar",
     "grupo_novo", "configuracoes_lex_chave", "configuracoes_lex_revogar",
+    "carteira_arquivar", "carteira_desarquivar", "carteira_excluir",
+    "carteira_restaurar_da_lixeira",  # 1.5.0: as ações de arquivo somem no modo
     "demanda_pasta_abrir",  # o caminho da pasta do caso fica oculto na apresentação
 }
 PREFIXO_TRIBUNAIS = "/configuracoes/tribunais"
@@ -587,6 +590,7 @@ def lista():
             "ultima_varredura": painel_dados.ultima_varredura(conn),
             "quadro": painel_dados.quadro(conn, agora.date()),
             "atividade_agora": painel_dados.atividade_agora(conn),
+            "faixa_voltaram": painel_dados.faixa_voltaram(conn, agora.date()),
         }
     finally:
         conn.close()
@@ -1162,7 +1166,7 @@ def processo(numero: str):
     """Processo: cabeçalho e linha do tempo do banco; peças e resumo do cache."""
     conn = banco.conectar()
     try:
-        detalhe = painel_dados.processo_detalhe(conn, numero)
+        detalhe = painel_dados.processo_detalhe(conn, numero, painel_dados.hoje_cuiaba())
     finally:
         conn.close()
     dados = cache.ler(numero)
@@ -1338,16 +1342,24 @@ def carteira_adicionar():
     conn = banco.conectar()
     try:
         with conn:
-            ja_estava = conn.execute(
-                f"SELECT 1 FROM processo WHERE numero = ? AND ({nucleo_carteira.FILTRO_ATIVA})",
-                (numero,)).fetchone() is not None
-            nucleo_carteira.registrar_candidato(
-                conn, numero, nucleo_carteira.tribunal_do_numero(numero), origem)
-            if nucleo_carteira.confirmar(conn, numero):
-                nucleo_quadro.devolver_ao_quadro(conn, numero)  # se tinha sido "Não é meu"
+            linha = conn.execute("SELECT * FROM processo WHERE numero = ?", (numero,)).fetchone()
+            guardado = (linha is not None
+                        and nucleo_carteira.estado(linha) in ("arquivado_voce", "lixeira"))
+            ja_estava = False
+            if not guardado:
+                ja_estava = conn.execute(
+                    f"SELECT 1 FROM processo WHERE numero = ? AND ({nucleo_carteira.FILTRO_ATIVA})",
+                    (numero,)).fetchone() is not None
+                nucleo_carteira.registrar_candidato(
+                    conn, numero, nucleo_carteira.tribunal_do_numero(numero), origem)
+                if nucleo_carteira.confirmar(conn, numero):
+                    nucleo_quadro.devolver_ao_quadro(conn, numero)  # se tinha sido "Não é meu"
     finally:
         conn.close()
-    if ja_estava:
+    if guardado:
+        flash("Este processo está arquivado ou na lixeira. Use «Desarquivar» ou «Restaurar» "
+              "na página dele.", "erro")
+    elif ja_estava:
         flash("Este processo já está na sua carteira.", "ok")
     else:
         flash("Processo adicionado à sua carteira. A Controladoria passa a acompanhá-lo "
@@ -1755,18 +1767,22 @@ def ponte_falha(conn, demanda_id: int):
     return jsonify({"ok": True})
 
 
+ABAS_DA_CARTEIRA = ("ativa", "a_conferir", "arquivados", "lixeira", "descartados")
+
+
 @app.route("/carteira")
 def carteira_tela():
-    """Carteira: processos em que a OAB atua (aba Ativa), os a conferir e os descartados."""
+    """Carteira: Ativa, A conferir, Arquivados, Lixeira e Descartados."""
     aba = request.args.get("aba", "ativa")
-    if aba not in ("ativa", "a_conferir", "descartados"):
+    if aba not in ABAS_DA_CARTEIRA:
         aba = "ativa"
     busca = (request.args.get("q") or "").strip()
     tribunal = (request.args.get("tribunal") or "").strip()
+    hoje = painel_dados.hoje_cuiaba()
     conn = banco.conectar()
     try:
-        todas = painel_dados.linhas_da_carteira(conn, aba, painel_dados.hoje_cuiaba())
-        contagens = painel_dados.contagens(conn)
+        todas = painel_dados.linhas_da_carteira(conn, aba, hoje)
+        contagens = painel_dados.contagens(conn, hoje)
     finally:
         conn.close()
     return render_template(
@@ -1826,13 +1842,73 @@ def carteira_confirmar():
                      nucleo_quadro.devolver_ao_quadro, "O cartão voltou ao quadro.")
 
 
+def _resposta_acao(ok: bool, mensagem: str):
+    """Resposta das ações de arquivo: JSON para o cartão do quadro; para formulário, o
+    aviso na tela e a volta à página de origem (padrão: a carteira)."""
+    if _quer_json():
+        return _resposta_quadro(ok, mensagem)
+    flash(mensagem, "ok" if ok else "erro")
+    return redirect(_destino_seguro(request.form.get("voltar"), url_for("carteira_tela")))
+
+
+def _acao_de_arquivo(acao: str):
+    """Arquivar, desarquivar, excluir ou restaurar da lixeira: um processo (página do
+    processo, cartão do quadro) ou um lote (carteira), pelo campo `numero` repetido. Até
+    acoes_processo.LIMITE_LOTE de uma vez; acima disso, nada muda. Se o quadro mudar no
+    meio (movimento concorrente de um cartão), a transação é desfeita por inteiro."""
+    numeros = []
+    for valor in request.form.getlist("numero"):
+        digitos = "".join(c for c in _resolver_apelido(valor) if c.isdigit())
+        if len(digitos) == 20:
+            numeros.append(digitos)
+    if not numeros:
+        return _resposta_acao(False, "Escolha pelo menos um processo.")
+    conn = banco.conectar()
+    try:
+        with conn:
+            r = acoes_processo.aplicar(conn, acao, numeros)
+    except acoes_processo.LoteGrande as exc:
+        return _resposta_acao(False, str(exc))
+    except nucleo_quadro.MovimentoInvalido:
+        return _resposta_acao(False, "O quadro mudou enquanto você agia. Tente de novo.")
+    finally:
+        conn.close()
+    return _resposta_acao(acoes_processo.deu_certo(r), acoes_processo.mensagem(acao, r))
+
+
+@app.route("/carteira/arquivar", methods=["POST"])
+def carteira_arquivar():
+    """«Arquivar»: sai da carteira ativa e do quadro; volta sozinho com publicação nova."""
+    return _acao_de_arquivo("arquivar")
+
+
+@app.route("/carteira/desarquivar", methods=["POST"])
+def carteira_desarquivar():
+    """«Desarquivar» (por você ou pelo tribunal): volta à carteira, com os cartões."""
+    return _acao_de_arquivo("desarquivar")
+
+
+@app.route("/carteira/excluir", methods=["POST"])
+def carteira_excluir():
+    """«Excluir»: lixeira por 30 dias. Nada é apagado; os autos e a pasta ficam."""
+    return _acao_de_arquivo("excluir")
+
+
+@app.route("/carteira/lixeira/restaurar", methods=["POST"])
+def carteira_restaurar_da_lixeira():
+    """«Restaurar» (lixeira): o processo volta para onde estava, com os cartões."""
+    return _acao_de_arquivo("restaurar")
+
+
 @app.route("/carteira/exportar")
 def carteira_exportar():
-    """Carteira.xlsx a partir do banco (abas Carteira e A conferir)."""
+    """Carteira.xlsx a partir do banco (abas Carteira, A conferir e Arquivados e lixeira)."""
     conn = banco.conectar()
     try:
         conteudo = gerar_xlsx(nucleo_carteira.listar(conn, "ativa"),
-                              nucleo_carteira.listar(conn, "a_conferir"))
+                              nucleo_carteira.listar(conn, "a_conferir"),
+                              arquivados=(nucleo_carteira.listar(conn, "arquivados")
+                                          + nucleo_carteira.listar(conn, "lixeira")))
     finally:
         conn.close()
     return Response(
@@ -1915,8 +1991,15 @@ def grupo_detalhe(slug: str):
     grupo = grupos.ler(slug)
     if grupo is None:
         abort(404, description="Grupo não encontrado.")
-    return render_template("grupo.html", grupo=grupo,
-                           processos=_processos_do_grupo(grupo),
+    processos = _processos_do_grupo(grupo)
+    conn = banco.conectar()
+    try:
+        selos = painel_dados.selos_de_estado(conn, [p["numero"] for p in processos])
+    finally:
+        conn.close()
+    for p in processos:
+        p["estado"] = selos.get(p["numero"], "")  # arquivado ou na lixeira segue no grupo
+    return render_template("grupo.html", grupo=grupo, processos=processos,
                            status=tarefas.ler_status(slug))
 
 

@@ -531,3 +531,68 @@ def test_autos_na_pasta_nao_reenvia_cartao_que_voltou_sem_tipo(conn):
     assert quadro.autos_na_pasta(conn, d, [{"nome": "autos.pdf", "tamanho": 10}]) is False
     assert _campos(conn, d, "coluna", "lex_estado", "pasta_estado") == (
         "autos", "sem_tipo", "na_pasta")
+
+
+# --- 1.5.0: arquivar e excluir tiram os cartões; desarquivar e restaurar devolvem ------
+
+def test_elegibilidade_sem_arquivado_por_voce_nem_excluido(conn):
+    _processo(conn, A)
+    conn.execute("UPDATE processo SET arquivado_por_voce_em = 'x' WHERE numero = ?", (A,))
+    assert not quadro.processo_elegivel(conn, A)
+    conn.execute("UPDATE processo SET arquivado_por_voce_em = NULL, excluido_em = 'x' "
+                 "WHERE numero = ?", (A,))
+    assert not quadro.processo_elegivel(conn, A)
+    conn.execute("UPDATE processo SET excluido_em = NULL WHERE numero = ?", (A,))
+    assert quadro.processo_elegivel(conn, A)
+
+
+def _cartao_na_coluna(conn, numero, ref, coluna, **campos):
+    """Cartão novo do processo já na coluna dada (sai de "chegou" na hora, para o próximo
+    adicionar_item abrir outro cartão)."""
+    demanda_id, _ = quadro.adicionar_item(conn, numero, "publicacao", ref, "2026-10-05")
+    nomes = ("coluna", *campos)
+    conn.execute(f"UPDATE demanda SET {', '.join(f'{n} = ?' for n in nomes)} WHERE id = ?",
+                 (coluna, *campos.values(), demanda_id))
+    return demanda_id
+
+
+def test_arquivar_tira_cartoes_sem_peca_pronta_e_cancela_os_autos(conn):
+    _processo(conn, A)
+    acao = _cartao_na_coluna(conn, A, "1", "acao", autos_estado="na_fila")
+    tarefas_fila.pedir(conn, "autos", str(acao))
+    acompanhar = _cartao_na_coluna(conn, A, "2", "acompanhar")
+    autos = _cartao_na_coluna(conn, A, "3", "autos")
+    revisao = _cartao_na_coluna(conn, A, "4", "revisao")
+    chegou = _cartao_na_coluna(conn, A, "5", "chegou")
+    movidos = quadro.tirar_do_quadro(conn, A, motivo=quadro.MOTIVO_ARQUIVADO)
+    assert movidos == [acao, acompanhar, autos, chegou]
+    assert {_coluna(conn, d) for d in movidos} == {"resolvida"}
+    assert _coluna(conn, revisao) == "revisao"  # peça pronta: fica onde está
+    assert not tarefas_fila.ativa(conn, "autos", str(acao))
+    assert _campos(conn, acao, "autos_estado") == ("",)
+    assert quadro.devolver_ao_quadro(conn, A) == []  # o "Não é meu" não mexe nestes
+    assert quadro.devolver_ao_quadro(conn, A, motivo=quadro.MOTIVO_ARQUIVADO) == movidos
+    assert [_coluna(conn, d) for d in movidos] == ["acao", "acompanhar", "autos", "chegou"]
+    assert tarefas_fila.ativa(conn, "autos", str(acao))  # de volta: autos pedidos de novo
+
+
+def test_arquivar_com_download_em_andamento_deixa_o_trabalhador_terminar(conn):
+    _processo(conn, A)
+    acao = _cartao_na_coluna(conn, A, "1", "acao", autos_estado="baixando")
+    assert quadro.tirar_do_quadro(conn, A, motivo=quadro.MOTIVO_EXCLUIDO) == [acao]
+    assert _campos(conn, acao, "coluna", "autos_estado") == ("resolvida", "baixando")
+
+
+def test_lex_trabalhando_e_cartao_no_lex_nao_sai(conn):
+    _processo(conn, A)
+    assert not quadro.lex_trabalhando(conn, A) and quadro.numeros_com_lex(conn) == set()
+    _cartao_na_coluna(conn, A, "1", "lex", lex_estado="na_fila")
+    assert quadro.lex_trabalhando(conn, A) and quadro.numeros_com_lex(conn) == {A}
+    assert quadro.tirar_do_quadro(conn, A, motivo=quadro.MOTIVO_ARQUIVADO) == []
+
+
+def test_advogado_nao_move_a_mao_de_acao_para_resolvido(conn):
+    _processo(conn, A)
+    d = _cartao_na_coluna(conn, A, "1", "acao")
+    with pytest.raises(quadro.MovimentoInvalido):
+        quadro.mover(conn, d, "resolvida", "advogado")

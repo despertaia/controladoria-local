@@ -336,3 +336,47 @@ def test_varredura_pje_lento_conta_falha_seguida(conn):
     r = conn.execute("SELECT estado, falhas_seguidas FROM conexao_tribunal "
                      "WHERE instancia = '1grau'").fetchone()
     assert (r["estado"], r["falhas_seguidas"]) == ("fora", 2)
+
+
+# --- 1.5.0: arquivados por você e lixeira -------------------------------------------
+
+def test_arquivado_por_voce_e_excluido_ficam_fora_do_pje(conn):
+    E = "00000050220248110041"
+    for n in (A, B, E):
+        carteira.registrar_candidato(conn, n, "TJMT", "djen")
+    with conn:
+        conn.execute("UPDATE processo SET advogado_atua = 1")
+        carteira.arquivar(conn, A)
+        carteira.excluir(conn, B)
+    assert varredura._numeros_para_sincronizar(conn) == [E]
+    with conn:
+        conn.execute("UPDATE processo SET advogado_atua = NULL")
+    assert varredura._numeros_para_sincronizar(conn) == [E]  # nem como recém-descobertos
+
+
+def test_djen_por_numero_consulta_o_arquivado_por_ultimo_e_nao_a_lixeira(conn):
+    D = "00000040220244013600"
+    E = "00000050220244013600"
+    _confirmado(conn, C, "TRF1", quando="2026-10-01T08:00:00-04:00")
+    _confirmado(conn, D, "TRF1", quando="2026-10-02T08:00:00-04:00")
+    _confirmado(conn, E, "TRF1", quando="2026-10-03T08:00:00-04:00")
+    with conn:
+        carteira.arquivar(conn, E)
+        carteira.excluir(conn, D)
+    obter = _djen_por_numero({})
+    _rodar(conn, PJeFalso(), obter=obter)
+    assert [c["numeroProcesso"] for c in obter.chamadas if "numeroProcesso" in c] == [C, E]
+
+
+def test_publicacao_nova_traz_o_arquivado_de_volta_e_vira_cartao(conn):
+    _rodar(conn, PJeFalso())  # quadro já ligado
+    _confirmado(conn, C, "TRF1", quando="2026-09-01T08:00:00-04:00")
+    with conn:
+        conn.execute("UPDATE processo SET arquivado_por_voce_em = '2026-10-01T10:00:00-04:00' "
+                     "WHERE numero = ?", (C,))
+    obter = _djen_por_numero({C: [item_djen(5, C, "TRF1", data="2026-10-05")]})
+    r = _rodar(conn, PJeFalso(), obter=obter)
+    assert r["cartoes_novos"] == 1
+    assert conn.execute("SELECT arquivado_por_voce_em FROM processo WHERE numero = ?",
+                        (C,)).fetchone()[0] is None
+    assert [e["tipo"] for e in eventos.listar(conn, C)].count("processo_voltou") == 1

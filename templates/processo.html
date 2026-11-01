@@ -21,6 +21,9 @@
   </div>
   {{ pub.fora_da_carteira(numero) }}
 {% else %}
+{% if detalhe and detalhe.arquivo.faixa %}
+<div class="aviso aviso-aviso faixa-estado" role="status">{{ detalhe.arquivo.faixa }}</div>
+{% endif %}
 
 {% set orgao = (detalhe.orgao_julgador if detalhe else '') or (dados.orgao_julgador if dados else '') %}
 {% set valor = (detalhe.valor_causa if detalhe else '') or (dados.valor_causa if dados else '') %}
@@ -35,7 +38,7 @@
   <div class="cabecalho-processo-info">
     <p class="sobretitulo">{{ detalhe.tribunal if detalhe else tribunal_sigla }}{% if detalhe and detalhe.instancia_rotulo %} · {{ detalhe.instancia_rotulo }}{% endif %}</p>
     <h1 class="numero-processo">{{ numero_formatado }}</h1>
-    {% if detalhe %}<span class="selo selo-{{ detalhe.tom }}">{{ detalhe.situacao }}</span>{% endif %}
+    {% if detalhe %}<span class="selo selo-{{ detalhe.tom }}">{{ detalhe.situacao }}</span>{% if detalhe.arquivo.voltou_br and detalhe.arquivo.estado in ('ativa', 'a_conferir') %} <span class="selo selo-ok">Voltou: publicação de {{ detalhe.arquivo.voltou_br }}</span>{% endif %}{% endif %}
     {% if detalhe and (detalhe.cliente or detalhe.parte_contraria) %}
     <dl class="lados">
       <div><dt>Cliente{% if detalhe.polo_cliente %} · {{ detalhe.polo_cliente }}{% endif %}</dt><dd>{{ detalhe.cliente or '—' }}</dd></div>
@@ -96,13 +99,35 @@
     {% else %}
     <p class="subtitulo">Neste tribunal os movimentos chegam pelas publicações do DJEN.</p>
     {% endif %}
+    {% if detalhe and not modo_apresentacao %}
+    {% set botoes_arquivo = {
+      'arquivar': ('carteira_arquivar', 'Arquivar', 'Arquivar este processo? Ele sai da carteira ativa e do quadro.'),
+      'excluir': ('carteira_excluir', 'Excluir', 'Excluir este processo? Ele fica na lixeira por 30 dias. Os autos e a pasta do caso não são apagados.'),
+      'desarquivar': ('carteira_desarquivar', 'Desarquivar', 'Desarquivar este processo? Ele volta para a carteira.'),
+      'restaurar': ('carteira_restaurar_da_lixeira', 'Restaurar', 'Restaurar este processo? Ele volta para onde estava.'),
+    } %}
+    <div class="acoes-arquivo">
+      {% for acao in detalhe.arquivo.acoes %}
+      {% set rota, rotulo, pergunta = botoes_arquivo[acao] %}
+      <form method="post" action="{{ url_for(rota) }}" onsubmit="return confirm('{{ pergunta }}');">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <input type="hidden" name="numero" value="{{ numero }}">
+        <input type="hidden" name="voltar" value="{{ url_for('processo', numero=numero) }}">
+        <button type="submit" class="btn btn-pequeno btn-secundario"{% if detalhe.arquivo.lex_trabalhando and acao in ('arquivar', 'excluir') %} disabled{% endif %}>{{ rotulo }}</button>
+      </form>
+      {% endfor %}
+    </div>
+    {% if detalhe.arquivo.lex_trabalhando and ('arquivar' in detalhe.arquivo.acoes or 'excluir' in detalhe.arquivo.acoes) %}
+    <p class="cartao-menu-nota">Espere o Lex terminar ou desista do pedido.</p>
+    {% endif %}
+    {% endif %}
     {% if dados and dados.atualizado_em %}
     <small class="atualizado-em">peças atualizadas em {{ dados.atualizado_em.replace('T',' ')[:16] }}</small>
     {% endif %}
   </div>
 </div>
 
-{% if detalhe %}{{ pub.decisao(detalhe.monitoramento, numero, url_for('processo', numero=numero)) }}{% else %}{{ pub.fora_da_carteira(numero) }}{% endif %}
+{% if detalhe %}{% if detalhe.arquivo.estado not in ('lixeira', 'arquivado_voce') %}{{ pub.decisao(detalhe.monitoramento, numero, url_for('processo', numero=numero)) }}{% endif %}{% else %}{{ pub.fora_da_carteira(numero) }}{% endif %}
 
 {% if detalhe and detalhe.cartoes_lex %}
 <div class="cartao">

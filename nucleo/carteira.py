@@ -16,7 +16,7 @@ import json
 import os
 import sqlite3
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime, timedelta
 
 from captura.mni_client import (CredencialInvalidaError, MNIError,
                                 ProcessoNaoEncontradoError)
@@ -39,15 +39,28 @@ A_CONFERIR_NAO_SINCRONIZADO = "A conferir (não sincronizado)"
 A_CONFERIR_FORA_DO_TJMT = "A conferir (fora do TJMT)"  # rótulo do TJMT; ver a_conferir_fora()
 A_CONFERIR_OAB_NAO_CONSTA = "A conferir (OAB não consta)"
 ARQUIVADO = "Arquivado"
+ARQUIVADO_POR_VOCE = "Arquivado por você"
+NA_LIXEIRA = "Na lixeira"
+# Lixeira (1.5.0): o excluído aparece na aba por este número de dias; depois some dela,
+# mas nada é apagado do banco (uma publicação nova ainda o traz de volta).
+DIAS_NA_LIXEIRA = 30
 
 # Da carteira: a OAB do advogado consta (PJe ou DJEN) ou ele mesmo confirmou no painel
-# ("É meu"); a confirmação é coluna própria, que a sincronização não desfaz.
-FILTRO_ATIVA = "(advogado_atua = 1 OR confirmado_em IS NOT NULL) AND arquivado = 0"
+# ("É meu"); a confirmação é coluna própria, que a sincronização não desfaz. Arquivado por
+# você e excluído (lixeira) saem das abas comuns.
+_DA_CARTEIRA = "(advogado_atua = 1 OR confirmado_em IS NOT NULL)"
+_FORA_DO_ARQUIVO = "arquivado_por_voce_em IS NULL AND excluido_em IS NULL"
+FILTRO_ATIVA = f"{_DA_CARTEIRA} AND arquivado = 0 AND {_FORA_DO_ARQUIVO}"
 _SEM_ATUACAO = ("arquivado = 0 AND (advogado_atua IS NULL OR advogado_atua = 0) "
-                "AND confirmado_em IS NULL")
+                f"AND confirmado_em IS NULL AND {_FORA_DO_ARQUIVO}")
 _FILTROS = {
     "ativa": FILTRO_ATIVA,
     "a_conferir": f"{_SEM_ATUACAO} AND descartado_em IS NULL",
+    # Arquivados por você (vindos de qualquer aba) e os do tribunal que são da carteira.
+    "arquivados": ("excluido_em IS NULL AND (arquivado_por_voce_em IS NOT NULL "
+                   f"OR (arquivado = 1 AND {_DA_CARTEIRA}))"),
+    # Excluídos há menos de DIAS_NA_LIXEIRA dias; `listar` preenche :corte_lixeira.
+    "lixeira": "excluido_em IS NOT NULL AND substr(excluido_em, 1, 10) > :corte_lixeira",
     "descartados": f"{_SEM_ATUACAO} AND descartado_em IS NOT NULL",
 }
 
@@ -202,8 +215,119 @@ def restaurar(conn: sqlite3.Connection, numero: str) -> bool:
     return bool(cursor.rowcount)
 
 
+def arquivar(conn: sqlite3.Connection, numero: str) -> bool:
+    """«Arquivar»: o processo sai da Ativa (ou de «A conferir») e vai para «Arquivados»,
+    marcado "por você". A varredura do PJe deixa de consultá-lo; o DJEN segue de olho e
+    uma publicação nova o traz de volta. Não vale na lixeira nem em Descartados (o
+    descartado que passou a ter a OAB está na Ativa e vale). True se mudou."""
+    cursor = conn.execute(
+        "UPDATE processo SET arquivado_por_voce_em = ? WHERE numero = ? "
+        "AND arquivado_por_voce_em IS NULL AND excluido_em IS NULL "
+        "AND NOT (descartado_em IS NOT NULL AND (advogado_atua IS NULL OR advogado_atua = 0) "
+        "AND confirmado_em IS NULL)",
+        (eventos.agora(), numero))
+    if cursor.rowcount:
+        eventos.registrar(conn, "processo_arquivado", numero)
+    return bool(cursor.rowcount)
+
+
+def desarquivar(conn: sqlite3.Connection, numero: str) -> bool:
+    """«Desarquivar»: vale para o arquivado por você e para o arquivado pelo tribunal (as
+    duas marcas saem). Do tribunal, guarda a data de arquivamento desfeita
+    (`desarquivado_ref`): ele só volta a ser arquivado se o tribunal arquivar de novo,
+    com outra data. Não vale na lixeira. True se mudou."""
+    p = conn.execute("SELECT arquivado, data_arquivamento, arquivado_por_voce_em, excluido_em "
+                     "FROM processo WHERE numero = ?", (numero,)).fetchone()
+    if p is None or p["excluido_em"] or not (p["arquivado_por_voce_em"] or p["arquivado"]):
+        return False
+    if p["arquivado"]:
+        conn.execute("UPDATE processo SET arquivado_por_voce_em = NULL, arquivado = 0, "
+                     "desarquivado_ref = ? WHERE numero = ?", (p["data_arquivamento"], numero))
+    else:
+        conn.execute("UPDATE processo SET arquivado_por_voce_em = NULL WHERE numero = ?",
+                     (numero,))
+    eventos.registrar(conn, "processo_desarquivado", numero,
+                      {"por": "tribunal" if p["arquivado"] else "voce"})
+    return True
+
+
+def excluir(conn: sqlite3.Connection, numero: str) -> bool:
+    """«Excluir»: o processo vai para a lixeira por DIAS_NA_LIXEIRA dias e sai de todas as
+    outras abas. Nada é apagado: publicações, andamentos, cartões, autos e a pasta do caso
+    ficam. True se mudou."""
+    cursor = conn.execute("UPDATE processo SET excluido_em = ? "
+                          "WHERE numero = ? AND excluido_em IS NULL", (eventos.agora(), numero))
+    if cursor.rowcount:
+        eventos.registrar(conn, "processo_excluido", numero)
+    return bool(cursor.rowcount)
+
+
+def restaurar_da_lixeira(conn: sqlite3.Connection, numero: str) -> bool:
+    """«Restaurar» (lixeira): o processo volta para onde estava (Ativa, A conferir,
+    Descartados ou Arquivados), mesmo depois dos 30 dias. True se mudou."""
+    cursor = conn.execute("UPDATE processo SET excluido_em = NULL "
+                          "WHERE numero = ? AND excluido_em IS NOT NULL", (numero,))
+    if cursor.rowcount:
+        eventos.registrar(conn, "processo_restaurado_da_lixeira", numero)
+    return bool(cursor.rowcount)
+
+
+def _campo(linha, nome: str):
+    """Valor da coluna, ou None se a linha não a tem (dicts de teste, linhas antigas)."""
+    return linha[nome] if nome in linha.keys() else None
+
+
+def estado(linha) -> str:
+    """Onde o processo está, na prioridade das abas: "lixeira", "arquivado_voce",
+    "arquivado_tribunal", "ativa", "descartado" ou "a_conferir"."""
+    if _campo(linha, "excluido_em"):
+        return "lixeira"
+    if _campo(linha, "arquivado_por_voce_em"):
+        return "arquivado_voce"
+    if _campo(linha, "arquivado"):
+        return "arquivado_tribunal"
+    if _campo(linha, "advogado_atua") == 1 or _confirmado(linha):
+        return "ativa"
+    if _campo(linha, "descartado_em"):
+        return "descartado"
+    return "a_conferir"
+
+
+def voltar_por_publicacao(conn: sqlite3.Connection, numero: str, data_iso: str,
+                          publicacao_id=None) -> str | None:
+    """Publicação nova de um processo arquivado por você ou na lixeira, com data de
+    disponibilização posterior ao dia da marca: ele volta. O arquivado volta para onde
+    estava (Ativa ou A conferir); o da lixeira volta sem «É meu», sem descarte e sem
+    arquivo (cai em «A conferir»; na Ativa, se a OAB dele consta no tribunal). Registra
+    `processo_voltou`. Devolve de onde voltou ("arquivado" ou "lixeira") ou None."""
+    p = conn.execute("SELECT arquivado_por_voce_em, excluido_em FROM processo "
+                     "WHERE numero = ?", (numero,)).fetchone()
+    if p is None:
+        return None
+    dia = str(data_iso or "")[:10]
+    if p["excluido_em"]:
+        if dia <= p["excluido_em"][:10]:
+            return None
+        conn.execute("UPDATE processo SET excluido_em = NULL, arquivado_por_voce_em = NULL, "
+                     "confirmado_em = NULL, descartado_em = NULL WHERE numero = ?", (numero,))
+        de = "lixeira"
+    elif p["arquivado_por_voce_em"]:
+        if dia <= p["arquivado_por_voce_em"][:10]:
+            return None
+        conn.execute("UPDATE processo SET arquivado_por_voce_em = NULL WHERE numero = ?",
+                     (numero,))
+        de = "arquivado"
+    else:
+        return None
+    eventos.registrar(conn, "processo_voltou", numero,
+                      {"de": de, "publicacao": publicacao_id, "data": dia})
+    return de
+
+
 def gravar_publicacoes_novas(conn: sqlite3.Connection, publicacoes: list[dict]) -> list[dict]:
-    """Grava as publicações e devolve só as que ainda não estavam no banco."""
+    """Grava as publicações e devolve só as que ainda não estavam no banco.
+    Publicação inédita traz de volta o processo arquivado por você ou na lixeira
+    (voltar_por_publicacao)."""
     novas: list[dict] = []
     for p in publicacoes:
         partes_json = json.dumps(p.get("partes") or [], ensure_ascii=False)
@@ -223,6 +347,7 @@ def gravar_publicacoes_novas(conn: sqlite3.Connection, publicacoes: list[dict]) 
             eventos.registrar(conn, "publicacao_detectada", p["numero"],
                               {"id": p["id"], "data": p["data_disponibilizacao"],
                                "tribunal": p["tribunal"]})
+            voltar_por_publicacao(conn, p["numero"], p["data_disponibilizacao"], p["id"])
     return novas
 
 
@@ -339,9 +464,10 @@ def sincronizar_processo(conn: sqlite3.Connection, numero: str, clientes: dict,
 def recalcular_situacao(conn: sqlite3.Connection, numero: str | None = None) -> None:
     """Última publicação de cada processo, atuação fora do tribunal do escritório
     (pela OAB no DJEN)
-    e arquivado (publicação posterior ao arquivamento reabre). Com `numero`,
+    e arquivado (publicação posterior ao arquivamento reabre). Um arquivamento que o
+    advogado desfez (desarquivado_ref igual à data_arquivamento) não conta. Com `numero`,
     só aquele processo."""
-    sql = "SELECT numero, advogado_atua, data_arquivamento FROM processo"
+    sql = "SELECT numero, advogado_atua, data_arquivamento, desarquivado_ref FROM processo"
     linhas = (conn.execute(sql + " WHERE numero = ?", (numero,)) if numero
               else conn.execute(sql)).fetchall()
     for linha in linhas:
@@ -352,17 +478,25 @@ def recalcular_situacao(conn: sqlite3.Connection, numero: str | None = None) -> 
         atua = linha["advogado_atua"]
         if atua is None and pub["oab"]:
             atua = 1
+        arquivado = esta_arquivado(linha["data_arquivamento"], ultima)
+        if arquivado and linha["desarquivado_ref"] == linha["data_arquivamento"]:
+            arquivado = False  # o advogado desfez este arquivamento; outro, com outra data, vale
         conn.execute(
             "UPDATE processo SET ultima_publicacao_data = ?, advogado_atua = ?, arquivado = ? "
-            "WHERE numero = ?",
-            (ultima, atua, int(esta_arquivado(linha["data_arquivamento"], ultima)),
-             linha["numero"]))
+            "WHERE numero = ?", (ultima, atua, int(arquivado), linha["numero"]))
 
 
 def situacao(linha) -> str:
     """Rótulo honesto da situação do processo, para a planilha e o painel. Confirmado
     pelo advogado ("É meu") conta como da carteira: Ativo se o PJe também achou a
-    atuação; senão, o rótulo de quem atua pelo DJEN."""
+    atuação; senão, o rótulo de quem atua pelo DJEN. Na lixeira, arquivado por você e
+    arquivado (pelo tribunal) vêm antes de tudo."""
+    if _campo(linha, "excluido_em"):
+        return NA_LIXEIRA
+    if _campo(linha, "arquivado_por_voce_em"):
+        return ARQUIVADO_POR_VOCE
+    if _campo(linha, "arquivado"):
+        return ARQUIVADO
     if linha["erro_sincronizacao"]:
         return SEM_ACESSO
     atua = linha["advogado_atua"]
@@ -397,21 +531,33 @@ def resumo(conn: sqlite3.Connection) -> dict:
         "processos": contar("SELECT COUNT(*) FROM processo"),
         "carteira_ativa": contar(f"SELECT COUNT(*) FROM processo WHERE {_FILTROS['ativa']}"),
         "arquivados": contar("SELECT COUNT(*) FROM processo WHERE arquivado = 1"),
+        "arquivados_por_voce": contar(
+            "SELECT COUNT(*) FROM processo "
+            "WHERE arquivado_por_voce_em IS NOT NULL AND excluido_em IS NULL"),
+        "excluidos": contar("SELECT COUNT(*) FROM processo WHERE excluido_em IS NOT NULL"),
         "a_conferir": contar(f"SELECT COUNT(*) FROM processo WHERE {_FILTROS['a_conferir']}"),
         "falhas_pje": contar("SELECT COUNT(*) FROM processo WHERE erro_sincronizacao IS NOT NULL"),
         "publicacoes": contar("SELECT COUNT(*) FROM publicacao"),
     }
 
 
-def listar(conn: sqlite3.Connection, situacao: str = "ativa") -> list[sqlite3.Row]:
+def _hoje() -> date:
+    return datetime.now(tribunal.fuso()).date()
+
+
+def listar(conn: sqlite3.Connection, situacao: str = "ativa",
+           hoje: date | None = None) -> list[sqlite3.Row]:
+    """Processos de uma aba, o de movimento mais recente primeiro. `hoje` só pesa na
+    lixeira (o que foi excluído há DIAS_NA_LIXEIRA dias ou mais some dela)."""
     if situacao not in _FILTROS:
         raise ValueError(f"situacao deve ser uma de: {', '.join(_FILTROS)} "
                          f"(recebido: {situacao!r}).")
+    corte = ((hoje or _hoje()) - timedelta(days=DIAS_NA_LIXEIRA)).isoformat()
     return conn.execute(
         f"SELECT * FROM processo WHERE {_FILTROS[situacao]} "
         "ORDER BY MAX(COALESCE(ultimo_andamento_data, ''), "
-        "COALESCE(ultima_publicacao_data, '')) DESC, numero"
-    ).fetchall()
+        "COALESCE(ultima_publicacao_data, '')) DESC, numero",
+        {"corte_lixeira": corte}).fetchall()
 
 
 def sincronizar_lista(conn: sqlite3.Connection, numeros: list[str], clientes: dict,
@@ -473,7 +619,10 @@ def atualizar(conn: sqlite3.Connection, adv: Advogado, *, desde: date,
     progresso(f"DJEN: {len(publicacoes)} publicação(ões), {novas} nova(s); "
               f"{novos} processo(s) novo(s).")
 
-    numeros = [r["numero"] for r in conn.execute("SELECT numero FROM processo ORDER BY numero")]
+    # Arquivado por você e lixeira: só o DJEN acompanha (a publicação nova os traz de volta).
+    numeros = [r["numero"] for r in conn.execute(
+        "SELECT numero FROM processo WHERE arquivado_por_voce_em IS NULL "
+        "AND excluido_em IS NULL ORDER BY numero")]
     try:
         for trib in tribunal.configurados():
             sincronizar_lista(conn, [n for n in numeros if tribunal.do_numero(n) == trib],

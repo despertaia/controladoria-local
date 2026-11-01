@@ -70,6 +70,7 @@ def test_cockpit(cliente):
     assert "Atividade recente" in html and "MARIA APARECIDA SOUZA" in html
     assert "Situação da carteira" in html and "Conferidos no PJe" in html
     assert "06:00" in html
+    assert "1 processo(s) voltaram por publicação nova" in html
 
 
 def test_rotas_da_planilha_antiga_sairam(cliente):

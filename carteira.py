@@ -51,7 +51,9 @@ def main(argv: list[str] | None = None) -> int:
             print("Resumo: " + ", ".join(f"{k}={v}" for k, v in resultado.items()))
             return 0
         conteudo = gerar_xlsx(nucleo_carteira.listar(conn, "ativa"),
-                              nucleo_carteira.listar(conn, "a_conferir"))
+                              nucleo_carteira.listar(conn, "a_conferir"),
+                              arquivados=(nucleo_carteira.listar(conn, "arquivados")
+                                          + nucleo_carteira.listar(conn, "lixeira")))
         with open(args.saida, "wb") as f:
             f.write(conteudo)
         print(f"Planilha gravada: {args.saida}")
