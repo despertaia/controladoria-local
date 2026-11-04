@@ -20,7 +20,7 @@ import os
 import threading
 from pathlib import Path
 
-from ponte_mac import chaves, executor, laco
+from ponte_mac import chaves, executor, laco, leitor
 from ponte_mac.cliente import Painel
 
 log = logging.getLogger("ponte_mac.local")
@@ -63,8 +63,16 @@ def preparar_chave_local(conn) -> str:
     return chave
 
 
+_TRAVA_DA_CHAVE = threading.Lock()  # a ponte e a leitura pedem a chave ao mesmo tempo
+
+
 def _chave_do_banco() -> str | None:
     """Abre o banco do painel (CONTROLADORIA_BANCO) e devolve a chave pronta, ou None."""
+    with _TRAVA_DA_CHAVE:
+        return _chave_do_banco_sem_trava()
+
+
+def _chave_do_banco_sem_trava() -> str | None:
     from nucleo import banco
 
     try:
@@ -84,6 +92,16 @@ def _chave_do_banco() -> str | None:
 
 def _token() -> str:
     return chaves.ler(chaves.ACESSO_CLAUDE) or ""
+
+
+_AVISOU_SEM_CHAVE = False
+
+
+def _avisar_uma_vez_sem_chave() -> None:
+    global _AVISOU_SEM_CHAVE
+    if not _AVISOU_SEM_CHAVE:
+        _AVISOU_SEM_CHAVE = True
+        log.warning("sem a chave da ponte, a leitura de prazos espera (confira o cofre e o banco)")
 
 
 def rodar_local(painel_url: str, casa, parar_evento: threading.Event,
@@ -128,9 +146,33 @@ def rodar_local(painel_url: str, casa, parar_evento: threading.Event,
 
 def rodar_em_thread(painel_url: str, casa, parar_evento: threading.Event,
                     estado: Path | None = None) -> threading.Thread:
-    """Sobe a ponte numa thread (daemon) e a devolve já iniciada."""
+    """Sobe a ponte numa thread (daemon) e a devolve já iniciada, com a leitura de prazo no
+    fio dela. A leitura não precisa da casa da Banca: a chave da ponte sai do mesmo caminho da
+    ponte, a do cofre ou uma gerada agora, senão quem não tem casa nunca teria chave. O login do
+    Claude é outra coisa: a leitura só o gasta depois de «Conectar o Lex», que guarda o acesso que
+    `_token` lê. O laço do squad segue com o login normal (`exigir_token=False`, em `rodar_local`)."""
+    atual: dict = {}
+
+    def painel_das_leituras():
+        """O painel das leituras, sem depender da casa da Banca: a chave sai do mesmo caminho
+        da ponte (cofre, ou gerada agora). Reaproveita o painel até o 401."""
+        painel = atual.get("painel")
+        if painel is not None and not painel.chave_recusada:
+            return painel
+        chave = _chave_do_banco()
+        if not chave:
+            _avisar_uma_vez_sem_chave()
+            return None
+        atual["painel"] = Painel(painel_url, chave)
+        return atual["painel"]
+
+    leitura = leitor.em_thread(painel_das_leituras, _token,
+                               Path.cwd() / "dados" / "leitura-vazia",
+                               parar=parar_evento.is_set,
+                               dormir=parar_evento.wait, exigir_token=True)
     thread = threading.Thread(target=rodar_local, args=(painel_url, casa, parar_evento, estado),
                               name="ponte-lex", daemon=True)
+    thread.leitura = leitura  # `parar` espera por ele também
     thread.start()
     return thread
 
@@ -142,5 +184,9 @@ def parar(parar_evento: threading.Event, thread: threading.Thread | None = None,
     reserva vencer, e a execução é retomada pelo run guardado."""
     parar_evento.set()
     executor.encerrar_em_andamento()
+    leitor.encerrar_em_andamento()
     if thread is not None:
         thread.join(timeout=espera_s)
+        leitura = getattr(thread, "leitura", None)
+        if leitura is not None:  # a reserva que ficar segurada vence sozinha
+            leitura.join(timeout=min(espera_s, 10))

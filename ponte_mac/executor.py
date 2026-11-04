@@ -608,6 +608,17 @@ def montar_prompt(pacote: dict, pasta: Path, retomar: dict | None) -> str:
             f"{shlex.quote(Path(pasta).name)} --json",
             "Use sempre um squad novo, ligado a este caso; nunca use `--reusar` nem um squad "
             "de outro caso.",
+            'Se o comando responder que nenhum modelo cobre a peça ("decisao": "nenhum"), '
+            "não pare: crie você mesmo o squad desta peça como o Arquiteto da Banca "
+            "(`_legalsquad/core/architect.agent.yaml`, fluxo de criar squad), ligado a este "
+            "caso. A criação está pré-autorizada pelo advogado; nas perguntas do Arquiteto, "
+            "escolha a opção recomendada. Nunca monte o squad a partir de um modelo de outra "
+            "área (um modelo criminal num caso cível, por exemplo): use só a estrutura de um "
+            "modelo de peça da mesma área do caso, com revisão isolada e Citation Gate, e "
+            "escreva os agentes para esta peça. Confira o squad com "
+            "`npx banca check-squad <código>` até não restar erro e então execute-o do "
+            "começo ao fim com este caso. A falta de modelo nunca é motivo para encerrar sem "
+            "a peça.",
         ]
     partes += [
         "",

@@ -7,14 +7,16 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
-from ponte_mac import chaves, laco
+from ponte_mac import chaves, laco, leitor
 from ponte_mac.cliente import Painel, PainelErro
 
 CONFIG = Path("~/.config/controladoria-ponte.json").expanduser()
 ESTADO = Path("~/.config/controladoria-ponte-estado.json").expanduser()
+PASTA_LEITURA = Path("~/.config/controladoria-leitura").expanduser()  # vazia, de propósito
 PADRAO = {"painel": "https://processos.despertaia.com.br",
           "casa": "~/Desktop/Claude Cowork/Processos pendentes"}
 _CHAVE_VALIDA = re.compile(r"[A-Za-z0-9_-]{40,}")
@@ -136,9 +138,17 @@ def main(argv: list[str] | None = None) -> int:
             if pronto is None:
                 return 0
             cfg, painel = pronto
-            laco.rodar(painel, Path(cfg["casa"]), token_fn, ESTADO,
-                       recriar=lambda: _painel(cfg),
-                       reler_chave=lambda: chaves.ler(chaves.CHAVE_PONTE))
+            # A leitura de prazo tem fio próprio: uma peça de horas não a segura.
+            parando = threading.Event()
+            leitor.em_thread(lambda: _painel(cfg), token_fn, PASTA_LEITURA,
+                             parar=parando.is_set, dormir=parando.wait, exigir_token=True)
+            try:
+                laco.rodar(painel, Path(cfg["casa"]), token_fn, ESTADO,
+                           recriar=lambda: _painel(cfg),
+                           reler_chave=lambda: chaves.ler(chaves.CHAVE_PONTE))
+            finally:  # SIGTERM chega aqui como SystemExit: o `claude` da leitura não fica órfão
+                parando.set()
+                leitor.encerrar_em_andamento()
         except KeyboardInterrupt:
             pass
         return 0

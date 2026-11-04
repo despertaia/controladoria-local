@@ -243,6 +243,19 @@ def test_montar_prompt_novo(tmp_path):
     assert "reabrir" not in texto
 
 
+def test_montar_prompt_sem_modelo_cria_o_time(tmp_path):
+    """Nenhum modelo cobre a peça: o Lex não para, cria o time pelo Arquiteto e executa."""
+    texto = executor.montar_prompt(PACOTE, tmp_path / PASTA_CASO, None)
+    assert '"decisao": "nenhum"' in texto
+    assert "não pare" in texto
+    assert "Arquiteto" in texto and "_legalsquad/core/architect.agent.yaml" in texto
+    assert "check-squad" in texto
+    assert "pré-autorizada" in texto
+    assert "Citation Gate" in texto and "revisão isolada" in texto
+    assert "falta de modelo nunca é motivo" in texto
+    assert "Nunca monte o squad a partir de um modelo de outra área" in texto
+
+
 def test_montar_prompt_ajuste(tmp_path):
     pacote = dict(PACOTE, modo="ajuste", ajuste='Trocar o valor para "R$ 15 mil".',
                   squad_anterior="peticao-inicial-jec", run_anterior="2026-10-06-202440")

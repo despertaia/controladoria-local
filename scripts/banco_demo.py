@@ -19,7 +19,8 @@ from datetime import date, datetime, time, timedelta
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from nucleo import banco, conexao, config, cofre_servidor, credenciais, eventos, ponte, quadro  # noqa: E402
+from nucleo import (banco, conexao, config, cofre_servidor, credenciais, eventos, ponte,  # noqa: E402
+                    prazos, prazos_banco, prazos_legais, quadro)
 from ponte_mac import pastas  # noqa: E402
 
 ADVOGADO = ("ADVOGADA DEMONSTRAÇÃO", "MT0012345A")
@@ -48,7 +49,7 @@ ORGAOS = ["1ª Vara Cível de Cuiabá", "3ª Vara Cível de Cuiabá",
 ARQUIVADOS = ["HELENA PRADO", "OTÁVIO BRANDÃO", "SÍLVIA MATOS"]
 VARREDURA = "T06:00:00-04:00"
 # Sobe quando a demonstração ganha dado novo: o painel_demo.sh recria a demo antiga.
-DEMO_VERSAO = 7
+DEMO_VERSAO = 8
 CHAVE_DEMO = "demo_versao"
 CHAVE_GERADA_EM = "demo_gerada_em"
 VALIDADE_DEMO = timedelta(hours=1)  # além disso (ou em outro dia) o painel_demo.sh regenera
@@ -201,12 +202,15 @@ class _Relogio:
         self.t = inicio
 
     def __enter__(self):
-        self._original = eventos.agora
+        self._original = eventos.agora, eventos.agora_fino
         eventos.agora = lambda: self.t.isoformat(timespec="seconds")
+        # a versão de cada prazo (`atualizado_em`) usa o relógio fino: sem isto, cada geração
+        # gravaria o instante de verdade
+        eventos.agora_fino = lambda: self.t.isoformat(timespec="microseconds")
         return self
 
     def __exit__(self, *exc):
-        eventos.agora = self._original
+        eventos.agora, eventos.agora_fino = self._original
 
 
 def _quando(dia: date, hora: int, minuto: int = 0) -> datetime:
@@ -466,6 +470,142 @@ def _demonstrar_o_lex(conn, relogio, hoje: date, agora: datetime, pecas_dir: str
     config.gravar(conn, config.LEX_AUTOMATICO, "0")
     relogio.t = agora - timedelta(minutes=1)
     ponte.registrar_contato(conn)
+    ponte.registrar_contato_do_leitor(conn)
+
+
+# --- os prazos da 1.6.0 na demonstração -------------------------------------------------
+
+DIAS_ANTES_DO_ANO_SEM_PRAZO = 8  # o início de um prazo que atravessa o fim de ano
+
+
+def _prazo_do(conn, numero: str) -> int:
+    """O prazo, ainda esperando o Lex, da publicação mais recente do processo."""
+    r = conn.execute("SELECT id FROM prazo WHERE numero = ? AND origem_tipo = 'publicacao' "
+                     "AND estado = 'aguardando_lex' ORDER BY disponibilizacao DESC, id LIMIT 1",
+                     (numero,)).fetchone()
+    if r is None:
+        raise RuntimeError(f"a demonstração esperava um prazo aberto em {numero}")
+    return r["id"]
+
+
+def _dia_em_que_corre(cal, dia: date, passo: int) -> date:
+    """O primeiro dia a partir de `dia` (para trás se `passo` < 0) em que o prazo corre."""
+    while not cal.corre(dia):
+        dia += timedelta(days=passo)
+    return dia
+
+
+def _inicio_da_fatal(cal, legal, alvo: date) -> date:
+    """O dia de início, informado, que leva a conta da lista à data fatal `alvo` (um dia em que
+    o prazo corre). Procura com a própria conta: nenhuma regra de contagem é repetida aqui."""
+    inicio = alvo
+    for _ in range(legal.dias * 4 + 60):
+        if prazos.contar(None, legal.dias, legal.unidade, cal, inicio=inicio).fatal <= alvo:
+            break
+        inicio -= timedelta(days=1)
+    return inicio
+
+
+def _preencher(conn, hoje: date, prazo_id: int, codigo: str, fatal: date | None = None) -> None:
+    """O advogado escolhe o ato da lista; com `fatal`, informa o início que leva até ela."""
+    inicio = None
+    if fatal is not None:
+        cal = prazos_banco.calendario_do_prazo(conn, prazos_banco.obter(conn, prazo_id))
+        inicio = _inicio_da_fatal(cal, prazos_legais.PRAZOS[codigo], fatal).isoformat()
+    prazos_banco.corrigir(conn, prazo_id, codigo=codigo, inicio=inicio, hoje=hoje)
+
+
+def _inicio_que_atravessa_o_fim_de_ano(cal, hoje: date) -> date | None:
+    """O início, informado, de um prazo que passa pelo recesso da tabela: o mais perto de `hoje`
+    entre os ciclos cadastrados. Sem ciclo na tabela (ano distante), None: o aviso não nasce."""
+    primeiros = [d for d in sorted(cal.suspensao) if d - timedelta(days=1) not in cal.suspensao]
+    inicios = [d - timedelta(days=DIAS_ANTES_DO_ANO_SEM_PRAZO) for d in primeiros]
+    return min(inicios, key=lambda d: abs((d - hoje).days)) if inicios else None
+
+
+def _envio_que_muda_a_data(conn, publicacao: dict, legal, hoje: date) -> date:
+    """O dia de envio da intimação do PJe, o mais recente possível, cuja conta dá uma data
+    diferente da conta da publicação. Quase sempre é ontem; no recesso, em que as duas contas
+    começam no mesmo dia, é um envio de antes dele."""
+    cal = prazos_banco.calendario_do_prazo(conn, publicacao)
+    da_publicacao = prazos.contar(date.fromisoformat(publicacao["disponibilizacao"]), legal.dias,
+                                  legal.unidade, cal).fatal
+    for atras in range(1, 60):
+        envio = hoje - timedelta(days=atras)
+        da_intimacao = prazos_banco._contar_do_aviso(  # noqa: SLF001 - a conta é a do painel
+            cal, envio, None, False, legal.dias, legal.unidade, False, None)[0].fatal
+        if da_intimacao != da_publicacao:
+            return envio
+    return hoje - timedelta(days=1)
+
+
+def _demonstrar_prazos(conn, hoje: date) -> None:
+    """Um prazo em cada estado, nascido das publicações do próprio quadro e levado pelas funções
+    de verdade (`corrigir`, `conferir`, `aplicar_leitura`, `cumprir`...). As datas saem de
+    `hoje`: a fatal é sempre um dia em que o prazo corre, e quando o dia pedido não corre (fim
+    de semana, feriado, recesso) vale o mais perto no sentido seguro. Nada aqui chama o Lex: o
+    que sobra em «aguardando o Lex» segue esperando, sem reserva e sem tentativa."""
+    # a intimação do PJe do processo 2, que dá a outra data
+    publicacao = prazos_banco.obter(conn, _prazo_do(conn, _tjmt(2)))
+    envio = _envio_que_muda_a_data(
+        conn, publicacao, prazos_legais.PRAZOS["contestacao"], hoje)
+    conn.execute(
+        "INSERT INTO aviso (instancia, id, numero, tipo_comunicacao, data_disponibilizacao, "
+        "orgao, visto_em, pendente) VALUES ('1grau', 'demo-2', ?, 'INT', ?, ?, ?, 1)",
+        (_tjmt(2), envio.isoformat(), ORGAOS[1], hoje.isoformat() + "T06:00:00-04:00"))
+    quadro.gerar_pendentes(conn, hoje)
+
+    cal = prazos_banco.calendario_do_processo(conn, _tjmt(3))
+    mais_de_uma_semana = _dia_em_que_corre(cal, hoje + timedelta(days=12), +1)
+
+    # conferido, a vencer, com a data de trabalho dois dias úteis antes
+    longe = _prazo_do(conn, _tjmt(3))
+    _preencher(conn, hoje, longe, "contestacao", mais_de_uma_semana)
+    prazos_banco.conferir(conn, longe)
+    prazos_banco.escolher_trabalho(conn, longe, d=2)
+    # conferido e já vencido
+    atrasado = _prazo_do(conn, _tjmt(4))
+    _preencher(conn, hoje, atrasado, "apelacao", _dia_em_que_corre(cal, hoje - timedelta(days=3), -1))
+    prazos_banco.conferir(conn, atrasado)
+    # a conferir, vence hoje (ou no primeiro dia em que o prazo corre)
+    hoje_mesmo = _prazo_do(conn, _tjmt(5))
+    _preencher(conn, hoje, hoje_mesmo, "ed_cpc", _dia_em_que_corre(cal, hoje, +1))
+    # a conferir e já vencido: ninguém conferiu
+    vencido = _prazo_do(conn, _tjmt(6))
+    _preencher(conn, hoje, vencido, "agravo_interno", _dia_em_que_corre(cal, hoje - timedelta(days=6), -1))
+    # a conferir, com o recesso no meio: a data vem sem a suspensão ao lado
+    inicio = _inicio_que_atravessa_o_fim_de_ano(cal, hoje)
+    if inicio is not None:
+        recesso = _prazo_do(conn, _trf1(13))
+        prazos_banco.corrigir(conn, recesso, codigo="contrarrazoes_apelacao",
+                              inicio=inicio.isoformat(), hoje=hoje)
+    # publicação e intimação do PJe com datas diferentes: vale a que vence primeiro
+    duas = _prazo_do(conn, _tjmt(2))
+    prazos_banco.corrigir(conn, duas, codigo="contestacao", hoje=hoje)
+    # lido pelo Lex na lista fechada (o texto diz «prazo legal», sem número)
+    lido = _prazo_do(conn, _tjmt(7))
+    trecho = "manifestação no prazo legal"
+    prazos_banco.aplicar_leitura(conn, lido, json.dumps({"prazos": [{
+        "ato": prazos_legais.PRAZOS["manifestacao_documentos"].ato, "dias": None,
+        "unidade": prazos_legais.PRAZOS["manifestacao_documentos"].unidade,
+        "origem_dos_dias": "lei", "codigo_ato": "manifestacao_documentos", "rito": "civel",
+        "trecho": trecho, "fixado_pelo_juiz": False, "ressalvas": [], "natureza": "processual",
+        "inicio_no_diario": True, "processo_suspenso": False}]}, ensure_ascii=False))
+    # o Lex leu e não viu prazo: a publicação é só um ato de cartório
+    informativo = prazos_banco.obter(conn, _prazo_do(conn, _trf1(14)))
+    conn.execute("UPDATE publicacao SET texto = 'Ato ordinatório. Certidão de publicação.' "
+                 "WHERE id = ?", (int(informativo["origem_ref"]),))
+    prazos_banco.aplicar_leitura(conn, informativo["id"], '{"sem_prazo": true}')
+    # «não há prazo aqui», dito pelo advogado
+    prazos_banco.descartar(conn, _prazo_do(conn, _trf1(17)))
+    # cumpridos: um pelo Protocolado do cartão, outro à mão
+    for k, pelo_cartao in ((0, True), (1, False)):
+        feito = _prazo_do(conn, _trf1(16))
+        _preencher(conn, hoje, feito, "contestacao" if k == 0 else "apelacao")
+        if pelo_cartao:
+            prazos_banco.cumprir_do_cartao(conn, prazos_banco.obter(conn, feito)["demanda_id"])
+        else:
+            prazos_banco.cumprir(conn, feito)
 
 
 def _demonstrar_arquivo(conn, hoje: date) -> None:
@@ -563,7 +703,7 @@ def gerar(conn, hoje: date, pecas_dir: str | None = None,
     4 no TRF1 só pelo DJEN, 3 arquivados, 3 de terceiros, 1 sem acesso e 1 do TRF1 a
     conferir (publicação longa, com as partes); um arquivado por você, dois na lixeira (um
     já fora da aba) e um que voltou por publicação nova; mais o quadro
-    com o Lex em todos os estados. Os arquivos das peças fictícias vão para `pecas_dir`
+    com o Lex em todos os estados e os prazos da 1.6.0, um em cada situação. Os arquivos das peças fictícias vão para `pecas_dir`
     (padrão: CONTROLADORIA_PECAS ou dados/demo-pecas). `agora` ancora o que está
     "acontecendo agora" (padrão: `hoje` às 10h): para o mesmo par, a saída é idêntica."""
     pecas_dir = pecas_dir or os.getenv("CONTROLADORIA_PECAS", "").strip() or PECAS_PADRAO
@@ -695,6 +835,7 @@ def gerar(conn, hoje: date, pecas_dir: str | None = None,
             _demonstrar_tribunais(conn, relogio, agora)
             _demonstrar_pastas_do_caso(conn, relogio, hoje)
             _demonstrar_o_lex(conn, relogio, hoje, agora, pecas_dir)
+            _demonstrar_prazos(conn, hoje)
             conn.execute("UPDATE tarefa SET estado = 'ok', terminada_em = MIN(pedida_em, ?) "
                          "WHERE estado IN ('na_fila', 'rodando')", (manha,))
             config.gravar(conn, CHAVE_DEMO, str(DEMO_VERSAO))

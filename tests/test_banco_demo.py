@@ -439,3 +439,202 @@ def test_demo_tem_um_processo_em_cada_estado_de_arquivo():
     wb = openpyxl.load_workbook(BytesIO(gerar_xlsx([], [], hoje=HOJE, arquivados=linhas)))
     situacoes = {c.value for c in wb["Arquivados e lixeira"]["O"][1:]}
     assert situacoes == {"Arquivado", "Arquivado por você", "Na lixeira"}
+
+
+# --- prazos da 1.6.0: um em cada estado -----------------------------------------------------
+
+import json as _json  # noqa: E402
+
+from nucleo import prazos as _prazos, prazos_banco, prazos_legais, prazos_tela  # noqa: E402
+
+ESTADOS_DOS_PRAZOS = set(prazos_banco.ESTADOS)
+# Terminações dos processos fictícios da demonstração (TJMT e TRF1): nenhum número real.
+FINAIS_FICTICIOS = ("0220248110041", "0220244013600")
+
+
+def _prazos_da(conn, **filtro):
+    onde = " AND ".join(f"{c} = ?" for c in filtro) or "1"
+    return [dict(r) for r in conn.execute(f"SELECT * FROM prazo WHERE {onde} ORDER BY id",
+                                          tuple(filtro.values()))]
+
+
+def _calendario(conn, p):
+    return prazos_banco.calendario_do_prazo(conn, p)
+
+
+def _o_que_a_demo_mostra(conn, hoje):
+    """Os prazos da demonstração pelo que o advogado vê, sem depender de números de id."""
+    todos = _prazos_da(conn)
+    leitos_da_lista = {e["dados_json"]["prazo"] for e in (
+        {"dados_json": _json.loads(r["dados"])} for r in conn.execute(
+            "SELECT dados FROM evento WHERE tipo = 'prazo_lido'"))}
+    saida = {"todos": todos}
+    saida["hoje"] = [p for p in todos if p["estado"] == "a_conferir" and p["fatal"] == hoje.isoformat()]
+    saida["a_conferir_vencido"] = [p for p in todos if p["estado"] == "a_conferir" and p["fatal"]
+                                   and p["fatal"] < hoje.isoformat()]
+    saida["conferido_longe"] = [p for p in todos if p["estado"] == "conferido" and p["fatal"]
+                                and p["fatal"] > hoje.isoformat() and p["trabalho"]
+                                and p["trabalho"] < p["fatal"]]
+    saida["conferido_atrasado"] = [p for p in todos if p["estado"] == "conferido" and p["fatal"]
+                                   and p["fatal"] < hoje.isoformat()]
+    saida["duas_datas"] = [p for p in todos if p["fatal_alternativa"]]
+    saida["suspensao"] = [p for p in todos if _prazos.AVISO_SUSPENSAO in _json.loads(
+        p["calculo"] or "{}").get("avisos", [])]
+    saida["lidos_da_lista"] = [p for p in todos if p["id"] in leitos_da_lista
+                               and p["origem_dos_dias"] == "lei" and p["estado"] == "a_conferir"]
+    return saida
+
+
+def test_demo_tem_um_prazo_em_cada_estado(tmp_path):
+    conn, _ = _demo(tmp_path)
+    assert banco_demo.DEMO_VERSAO >= 8
+    estados = {r[0] for r in conn.execute("SELECT DISTINCT estado FROM prazo")}
+    assert ESTADOS_DOS_PRAZOS <= estados
+    grupos = prazos_tela.lista(conn, HOJE)
+    assert grupos["a_conferir"] and grupos["a_definir"] and grupos["atrasados"]
+    assert grupos["a_conferir_proximos"] and grupos["a_conferir_vencidos"]
+    assert prazos_tela.faixa(conn, HOJE)
+    # sem conferência automática: quem está conferido passou pelo clique registrado
+    n = conn.execute("SELECT COUNT(*) FROM prazo WHERE estado = 'conferido'").fetchone()[0]
+    assert n == conn.execute("SELECT COUNT(*) FROM evento WHERE tipo = 'prazo_conferido'").fetchone()[0]
+
+
+def test_demo_mostra_cada_situacao_dos_prazos(tmp_path):
+    conn, _ = _demo(tmp_path)
+    v = _o_que_a_demo_mostra(conn, HOJE)
+    for chave in ("hoje", "a_conferir_vencido", "conferido_longe", "conferido_atrasado",
+                  "duas_datas", "suspensao", "lidos_da_lista"):
+        assert v[chave], chave
+    avisos = [p for p in v["todos"] if p["origem_tipo"] == "aviso" and p["estado"] == "a_definir"
+              and p["pareado_com"] is None]
+    assert avisos  # o prazo «a definir» que veio de uma intimação do PJe, ainda à vista
+    # a outra data é a mais tarde, e só aparece ao lado
+    for p in v["duas_datas"]:
+        assert p["fatal_alternativa"] > p["fatal"] and p["fatal_maior"] == 0
+        assert p["origem_tipo"] == "publicacao"
+    # a suspensão avisa e a data não cai dentro dela
+    for p in v["suspensao"]:
+        assert p["estado"] == "a_conferir"
+        assert p["fatal"] not in _calendario(conn, p).suspensao
+    # o prazo conferido com data de trabalho vem do D escolhido, antes da fatal
+    for p in v["conferido_longe"]:
+        assert p["d_escolhido"] == 2 and p["trabalho"] < p["fatal"]
+    # cumprido pelo cartão e cumprido à mão
+    cumpridos = _prazos_da(conn, estado="cumprido")
+    assert {p["cumprido_pelo_cartao"] for p in cumpridos} == {0, 1}
+
+
+def test_demo_so_usa_atos_da_lista_e_processos_ficticios(tmp_path):
+    conn, _ = _demo(tmp_path)
+    atos = {legal.ato for legal in prazos_legais.PRAZOS.values()}
+    for p in _prazos_da(conn):
+        assert p["numero"].endswith(FINAIS_FICTICIOS), p["numero"]
+        if p["codigo_ato"]:
+            assert p["codigo_ato"] in prazos_legais.PRAZOS and p["ato"] in atos
+            assert p["origem_dos_dias"] == "lei"
+        if p["ato"]:
+            assert p["ato"] in atos, p["ato"]  # nenhum ato fora da lista, nem «Preparo»
+        if p["dias"] is not None:
+            assert (p["dias"], p["unidade"]) in {(legal.dias, legal.unidade)
+                                                 for legal in prazos_legais.PRAZOS.values()}
+    for p in conn.execute("SELECT numero FROM prazo").fetchall():
+        assert conn.execute("SELECT 1 FROM processo WHERE numero = ?", (p["numero"],)).fetchone()
+
+
+def test_demo_nao_manda_nada_ao_lex_e_deixa_a_fila_intacta(tmp_path, monkeypatch):
+    import subprocess
+
+    def proibido(*a, **k):
+        raise AssertionError("a geração da demonstração não roda nenhum processo")
+
+    monkeypatch.setattr(subprocess, "run", proibido)
+    monkeypatch.setattr(subprocess, "Popen", proibido)
+    conn, _ = _demo(tmp_path)
+    esperando = _prazos_da(conn, estado="aguardando_lex")
+    assert len(esperando) >= 3
+    # ninguém reservou nem tentou ler: um leitor que apareça depois encontra a fila como nasceu
+    assert all(p["leitura_reservada_ate"] is None and p["tentativas"] == 0 for p in esperando)
+    assert not conn.execute("SELECT 1 FROM evento WHERE tipo IN ('prazo_leitura_falhou', "
+                            "'prazo_leitura_limite')").fetchone()
+
+
+def test_demo_tem_uma_so_intimacao_do_pje_sem_publicacao_cobrindo(tmp_path):
+    """A linha «a definir» da intimação do PJe fica à vista: nenhuma publicação com data a cobre."""
+    conn, _ = _demo(tmp_path)
+    grupos = prazos_tela.lista(conn, HOJE)
+    do_pje = [l for l in grupos["a_definir"] if l.get("origem_tipo") == "aviso"
+              or "PJe" in (l.get("motivo") or "")]
+    assert len(do_pje) == 1
+
+
+def test_demo_prazos_sao_deterministicos_para_o_mesmo_dia(tmp_path):
+    a, _ = _demo(tmp_path, "a")
+    b, _ = _demo(tmp_path, "b")
+    sql = "SELECT * FROM prazo ORDER BY id"
+    assert [tuple(r) for r in a.execute(sql)] == [tuple(r) for r in b.execute(sql)]
+
+
+def test_demo_antiga_continua_sendo_reconhecida_para_recriar(tmp_path):
+    """A versão da demonstração subiu: a de versão anterior é «antiga» (o script a recria), e um
+    banco que não é demonstração continua «outro» (nunca apagado)."""
+    caminho = tmp_path / "demo.db"
+    conn = banco.conectar(str(caminho))
+    banco_demo.gerar(conn, HOJE, pecas_dir=str(tmp_path / "p"), agora=AGORA)
+    assert banco_demo.situacao(str(caminho)) == "atual"
+    conn.execute("UPDATE config SET valor = ? WHERE chave = 'demo_versao'",
+                 (str(banco_demo.DEMO_VERSAO - 1),))
+    conn.commit()
+    conn.close()
+    assert banco_demo.situacao(str(caminho)) == "antiga"
+    real = tmp_path / "real.db"
+    r = banco.conectar(str(real))
+    r.execute("INSERT INTO processo (numero, tribunal, cliente) VALUES ('1', 'TJMT', 'PESSOA REAL')")
+    r.commit()
+    r.close()
+    assert banco_demo.situacao(str(real)) == "outro"
+
+
+DATAS_DIFICEIS = [
+    date(2026, 10, 6),   # terça
+    date(2026, 11, 6),   # sexta
+    date(2026, 11, 7),   # sábado
+    date(2026, 11, 8),   # domingo
+    date(2026, 11, 2),   # Finados, feriado
+    date(2026, 12, 18),  # sexta, a véspera do recesso
+    date(2026, 12, 20),  # primeiro dia do recesso
+    date(2026, 12, 31),
+    date(2027, 1, 1),    # dentro do recesso
+    date(2027, 1, 21),   # primeiro dia útil depois dele
+    date(2027, 3, 15),
+    date(2028, 2, 29),   # bissexto, ano sem calendário cadastrado
+]
+
+
+@pytest.mark.parametrize("hoje", DATAS_DIFICEIS, ids=lambda d: d.isoformat())
+def test_demo_dos_prazos_fica_certa_em_qualquer_dia(tmp_path, hoje):
+    conn = banco.conectar(":memory:")
+    banco_demo.gerar(conn, hoje, pecas_dir=str(tmp_path / "p"))  # não pode levantar
+    assert ESTADOS_DOS_PRAZOS <= {r[0] for r in conn.execute("SELECT DISTINCT estado FROM prazo")}
+    v = _o_que_a_demo_mostra(conn, hoje)
+    for chave in ("a_conferir_vencido", "conferido_longe", "conferido_atrasado", "duas_datas",
+                  "lidos_da_lista"):
+        assert v[chave], (chave, hoje)
+    assert v["suspensao"] or hoje.year >= 2029
+    # «a conferir hoje»: a fatal é hoje se hoje é dia em que o prazo corre no TJMT; senão, o
+    # primeiro dia em que corre (nunca um dia anterior, nunca um que o prazo não pode ter)
+    cal = prazos_banco.calendario_do_processo(conn, banco_demo._tjmt(5))
+    alvo = hoje
+    while not cal.corre(alvo):
+        alvo += timedelta(days=1)
+    assert [p["fatal"] for p in conn.execute(
+        "SELECT fatal FROM prazo WHERE estado = 'a_conferir' AND fatal = ?", (alvo.isoformat(),))], hoje
+    if alvo == hoje:
+        assert v["hoje"], hoje
+    # o estado de cada um bate com a data: conferido vencido está atrasado, a conferir vencido não
+    assert all(p["fatal"] < hoje.isoformat() for p in v["conferido_atrasado"])
+    assert all(p["trabalho"] < p["fatal"] for p in v["conferido_longe"])
+    grupos = prazos_tela.lista(conn, hoje)
+    assert grupos["atrasados"] and grupos["a_conferir_vencidos"] and grupos["a_definir"]
+    assert prazos_tela.faixa(conn, hoje)
+    n = conn.execute("SELECT COUNT(*) FROM prazo WHERE estado = 'conferido'").fetchone()[0]
+    assert n == conn.execute("SELECT COUNT(*) FROM evento WHERE tipo = 'prazo_conferido'").fetchone()[0]

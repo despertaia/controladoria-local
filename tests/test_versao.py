@@ -124,3 +124,42 @@ def test_verificacao_em_segundo_plano(monkeypatch):
     assert versao.aviso_de_versao() == {"nova": "9.0.0", "atual": versao.atual()}
     # cache em dia: não dispara outra thread
     assert versao.verificar_em_segundo_plano(lambda u, t: "9.9.9") is None
+
+
+# --- 1.6.0: a versão e as novidades dizem o que foi feito -----------------------------------
+
+
+def _novidades_da_160() -> str:
+    secao = versao.novidades()[0]
+    assert secao["versao"] == "1.6.0"
+    return "\n".join(secao["itens"])
+
+
+def test_versao_e_160_com_a_data_de_hoje():
+    assert versao.atual() == "1.6.0"
+    assert versao.novidades()[0]["data"] == "04/11/2026"
+
+
+def test_novidades_160_contam_o_que_foi_construido():
+    t = _novidades_da_160()
+    for frase in ("próximos e vencidos", "um número por grupo", "mesmo processo",
+                  "15 dias antes ou depois", "parte do envio", "mudou depois que você abriu",
+                  "«Protocolado»", "continua aberto", "o próximo prazo", "os atrasados",
+                  "sem data", "[A CONFERIR]", "mais de um ano", "Google", "suspensão de fim de ano",
+                  "exceções", "de tal dia a tal dia"):
+        assert frase in t, frase
+
+
+def test_novidades_160_sem_rastro_interno_nem_numero_de_lei():
+    """Texto para advogado: sem nome de motor, de script ou de arquivo, sem o modelo, e sem
+    número de prazo de lei (só os que são do próprio sistema: o contador e a janela de comparação)."""
+    import re
+    t = _novidades_da_160()
+    assert not re.search(r"\b\w+\.(py|md|sh|db|csv|ics|json)\b", t)
+    assert not re.search(r"\b(nucleo|scripts|templates|dados|tests)/", t)
+    for proibido in ("claude", "sonnet", "opus", "haiku", "modelo", "script", "banca", "prompt",
+                     "token", "json", "sqlite"):
+        assert proibido not in t.lower(), proibido
+    numeros = {m.group(0).lower() for m in re.finditer(
+        r"\b(\d+|um|uma|dois|duas|quinze|trinta)\s+(dias?|horas?)\b", t, re.IGNORECASE)}
+    assert numeros <= {"2 dias", "15 dias"}, numeros

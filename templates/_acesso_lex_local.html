@@ -60,7 +60,7 @@
     <button type="button" class="btn btn-secundario" id="copiar-diagnostico"
             data-url="{{ url_for('acesso_lex.diagnostico') }}">Copiar diagnóstico</button>
     {% if acesso.guardado %}
-    <form method="post" action="{{ url_for('acesso_lex.apagar') }}" onsubmit="return confirm('Apagar o acesso guardado? O Lex passa a usar o login normal do Claude Code.');">
+    <form method="post" action="{{ url_for('acesso_lex.apagar') }}" onsubmit="return confirm('Apagar o acesso guardado? A leitura de prazos para, e as outras tarefas do Lex passam a usar o login normal do Claude Code.');">
       <input type="hidden" name="csrf" value="{{ csrf_token() }}">
       <button type="submit" class="btn btn-secundario">Apagar acesso</button>
     </form>

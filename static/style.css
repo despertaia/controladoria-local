@@ -693,3 +693,93 @@ a.numero:hover { color: var(--latao-forte); }
   .tabela-carteira td.selecao { padding-bottom: 4px; }
   .acoes-arquivo { justify-content: flex-start; }
 }
+
+/* Prazos (1.6.0) */
+.contador-alerta { background: var(--alerta-fundo); color: var(--alerta); }
+.faixa-prazos { background: var(--aviso-fundo); color: var(--aviso-cor); }
+.prazo-pagina { max-width: 860px; }
+.prazo-grupo h2 { margin: 0 0 8px; font-size: 22px; }
+.prazo-grupo-vazio { padding-top: 14px; padding-bottom: 14px; }
+.prazo-grupo-vazio h2 { margin: 0; }
+.prazo-grupo-vazio .subtitulo { margin-top: 2px; }
+.prazo-ajuda { margin: 0 0 8px; font-size: 13px; }
+.prazo-linhas { list-style: none; margin: 0; padding: 0; }
+.prazo-linha { display: grid; grid-template-columns: minmax(0, 3fr) minmax(0, 2fr) auto; gap: 8px 16px; align-items: start; padding: 12px 0 12px 12px; border-top: 1px solid var(--linha); border-left: 3px solid transparent; }
+.prazo-linha:first-child { border-top: 0; }
+.prazo-linha > * { min-width: 0; }
+.prazo-atrasado { border-left-color: var(--alerta); }
+.prazo-urgente { border-left-color: var(--latao); }
+.prazo-ato { font-weight: 600; color: var(--tinta); text-decoration: none; overflow-wrap: anywhere; margin-right: 6px; }
+a.prazo-ato:hover { color: var(--latao-forte); }
+.prazo-numero { display: block; color: var(--cinza); font-size: 12px; overflow-wrap: anywhere; }
+.prazo-alerta { display: block; color: var(--alerta); font-size: 12px; font-weight: 600; overflow-wrap: anywhere; }
+.prazo-datas-linha { font-size: 14px; }
+.prazo-datas-linha span { display: block; }
+.prazo-acoes { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; justify-content: flex-end; }
+.prazo-acoes form { margin: 0; }
+.prazo-selos { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; margin: 8px 0 0; }
+.prazo-fatal { font-size: 18px; margin: 0 0 6px; }
+.prazo-fatal strong { font-family: var(--serifa); font-size: 32px; color: var(--alerta); margin: 0 8px 0 6px; font-variant-numeric: lining-nums; }
+.prazo-nota { margin: 6px 0; font-size: 13px; color: var(--tinta-suave); overflow-wrap: anywhere; }
+.prazo-origem { margin: 6px 0; font-size: 13px; color: var(--tinta-suave); overflow-wrap: anywhere; }
+.prazo-duas-datas { margin: 10px 0; padding: 10px 14px; border: 1px solid var(--linha-forte); border-radius: 6px; background: var(--papel-fundo); }
+.prazo-duas-datas p { margin: 4px 0; }
+.prazo-notas { margin: 6px 0 10px; }
+.prazo-botoes { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.prazo-botoes form { margin: 0; }
+.prazo-inline { display: inline-flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 0; }
+.prazo-inline label { font-size: 13px; color: var(--cinza); }
+.prazo-dobro { margin-top: 14px; }
+.prazo-dobro p { margin: 0 0 6px; font-size: 14px; }
+.prazo-trecho { margin: 8px 0 0; padding: 8px 14px; border-left: 3px solid var(--latao); color: var(--tinta-suave); overflow-wrap: anywhere; }
+.prazo-lista { margin: 6px 0 0; padding-left: 20px; font-size: 14px; overflow-wrap: anywhere; }
+.prazo-passos { margin: 6px 0; font-size: 14px; color: var(--tinta-suave); list-style: none; padding-left: 0; }
+.prazo-passos li { padding: 1px 0; }
+.prazo-formulario { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; align-items: end; margin-top: 8px; }
+.prazo-formulario label, .prazo-inline label { display: grid; gap: 4px; font-size: 13px; color: var(--cinza); }
+.prazo-formulario input, .prazo-formulario select, .prazo-inline input, .prazo-inline select, .prazo-incluir select {
+  width: 100%; padding: 8px 10px; font: 14px var(--texto); color: var(--tinta); background: var(--cartao);
+  border: 1px solid var(--linha-forte); border-radius: 6px; min-width: 0;
+}
+.prazo-inline input, .prazo-inline select { width: auto; }
+.prazo-formulario input:focus, .prazo-formulario select:focus, .prazo-inline input:focus, .prazo-inline select:focus { outline: none; border-color: var(--latao); box-shadow: 0 0 0 3px var(--latao-fundo); }
+.prazo-incluir { margin: 12px 0; }
+.prazo-incluir summary { cursor: pointer; color: var(--latao-forte); font-weight: 600; font-size: 14px; }
+.config-prazos { max-width: none; }
+.config-prazos .tabela-calendario { min-width: 760px; }
+.tabela-calendario tbody tr { cursor: default; }
+.tabela-calendario td.acao { white-space: normal; min-width: 130px; }
+.tabela-calendario td.acao form, .tabela-calendario td.acao details { margin: 0 0 6px; }
+.dia-inativo { opacity: .6; }
+.dia-inativo td:not(.acao) { text-decoration: line-through; text-decoration-color: var(--cinza-claro); }
+.dias-do-grupo ul { list-style: none; margin: 8px 0 0; padding: 0; }
+.dias-do-grupo li { margin: 0 0 10px; padding-top: 6px; border-top: 1px solid var(--cinza-claro); }
+
+.dia-inativo .selo { text-decoration: none; display: inline-block; }
+.grade-navegacao { display: flex; justify-content: space-between; align-items: center; gap: 8px 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.grade-navegacao-dir { display: inline-flex; gap: 6px; }
+.grade-legenda { font-size: 12px; margin: 0 0 8px; }
+.grade-rolagem { overflow-x: auto; padding-bottom: 4px; -webkit-overflow-scrolling: touch; }
+.grade-dias { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; min-width: 640px; }
+.grade-cabeca { font-size: 12px; font-weight: 600; color: var(--cinza); text-align: center; }
+.grade-dia { min-height: 88px; background: var(--cartao); border: 1px solid var(--linha); border-radius: 6px; padding: 4px; overflow: hidden; }
+.grade-hoje { border-color: var(--latao-forte); border-width: 2px; }
+.grade-fora { opacity: .5; }
+.grade-numero { display: block; font-size: 12px; color: var(--cinza); }
+.dia-item { display: inline-block; max-width: 100%; margin-top: 2px; padding: 1px 6px; border-radius: 4px; font-size: 11px; line-height: 1.4; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grade-dia .dia-item { display: block; }
+.dia-trabalho { background: var(--ok-fundo); color: var(--ok); }
+.dia-fatal { background: var(--alerta-fundo); color: var(--alerta); font-weight: 600; }
+@media (max-width: 860px) {
+  .prazo-linha { grid-template-columns: 1fr; }
+  .prazo-acoes { justify-content: flex-start; }
+}
+@media (max-width: 640px) {
+  .navegacao { overflow-x: auto; }
+  .navegacao a { padding: 0 9px; white-space: nowrap; }
+  .grade-dia { min-height: 60px; }
+  .dia-item { font-size: 10px; padding: 1px 3px; }
+  .prazo-fatal strong { font-size: 28px; }
+  .prazo-formulario { grid-template-columns: 1fr; }
+  .faixa-prazos { text-align: left; }
+}

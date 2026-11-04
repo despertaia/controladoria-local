@@ -11,6 +11,8 @@ import os
 import sqlite3
 import threading
 
+from nucleo.calendario_semente import SQL_SEMENTE
+
 CAMINHO_PADRAO = "dados/controladoria.db"
 
 MIGRACOES = [
@@ -223,6 +225,73 @@ MIGRACOES = [
     ALTER TABLE processo ADD COLUMN excluido_em TEXT;
     ALTER TABLE processo ADD COLUMN desarquivado_ref TEXT;
     """,
+    # 9 — 1.6.0 (calendário de prazos): só tabelas novas, os dias do calendário que vem
+    # pronto e a versão dele. Segura sobre o banco da produção.
+    """
+    CREATE TABLE dia_forense (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        data TEXT NOT NULL,
+        tribunal TEXT NOT NULL DEFAULT '',
+        comarca TEXT NOT NULL DEFAULT '',
+        tipo TEXT NOT NULL CHECK (tipo IN ('sem_expediente', 'reduzido', 'suspensao')),
+        descricao TEXT NOT NULL DEFAULT '',
+        fonte TEXT NOT NULL DEFAULT '',
+        origem TEXT NOT NULL CHECK (origem IN ('lei', 'ato', 'manual')),
+        ativo INTEGER NOT NULL DEFAULT 1,
+        atualizado_em TEXT
+    );
+    CREATE UNIQUE INDEX dia_forense_unico ON dia_forense (data, tribunal, comarca, tipo);
+    CREATE INDEX dia_forense_tribunal ON dia_forense (tribunal, data);
+    CREATE TABLE prazo (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        numero TEXT NOT NULL,
+        demanda_id INTEGER REFERENCES demanda (id),
+        origem_tipo TEXT NOT NULL CHECK (origem_tipo IN ('publicacao', 'aviso')),
+        origem_ref TEXT NOT NULL,
+        ordem INTEGER NOT NULL DEFAULT 0,
+        estado TEXT NOT NULL CHECK (estado IN ('aguardando_lex', 'a_conferir', 'a_definir',
+            'sem_prazo', 'conferido', 'cumprido', 'descartado')),
+        motivo TEXT NOT NULL DEFAULT '',
+        alerta TEXT NOT NULL DEFAULT '',
+        ato TEXT NOT NULL DEFAULT '',
+        codigo_ato TEXT NOT NULL DEFAULT '',
+        dias INTEGER,
+        unidade TEXT NOT NULL DEFAULT '',
+        rito TEXT NOT NULL DEFAULT '',
+        origem_dos_dias TEXT NOT NULL DEFAULT '',
+        trecho TEXT NOT NULL DEFAULT '',
+        fixado_pelo_juiz INTEGER NOT NULL DEFAULT 0,
+        dobro INTEGER NOT NULL DEFAULT 0,
+        disponibilizacao TEXT,
+        publicacao TEXT,
+        inicio TEXT,
+        inicio_informado TEXT,
+        ciencia TEXT,
+        fatal TEXT,
+        fatal_alternativa TEXT,
+        fatal_maior INTEGER NOT NULL DEFAULT 0,
+        fatal_informada TEXT,
+        trabalho TEXT,
+        d_escolhido INTEGER,
+        calculo TEXT NOT NULL DEFAULT '{}',
+        versao_calendario INTEGER,
+        ressalvas TEXT NOT NULL DEFAULT '[]',
+        tentativas INTEGER NOT NULL DEFAULT 0,
+        leitura_reservada_ate TEXT,
+        pareado_com INTEGER,
+        cumprido_de TEXT,
+        cumprido_pelo_cartao INTEGER NOT NULL DEFAULT 0,
+        criado_em TEXT NOT NULL,
+        atualizado_em TEXT NOT NULL,
+        conferido_em TEXT,
+        cumprido_em TEXT,
+        UNIQUE (origem_tipo, origem_ref, ordem)
+    );
+    CREATE INDEX prazo_numero ON prazo (numero);
+    CREATE INDEX prazo_demanda ON prazo (demanda_id);
+    CREATE INDEX prazo_estado ON prazo (estado);
+    INSERT OR IGNORE INTO config (chave, valor) VALUES ('prazos_calendario_versao', '1');
+    """ + SQL_SEMENTE,
 ]
 
 

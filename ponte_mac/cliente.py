@@ -160,6 +160,26 @@ class Painel:
             return False
         return bool(corpo.get("na_fila")) if isinstance(corpo, dict) else False
 
+    def proxima_leitura(self) -> dict | None:
+        """A próxima publicação para ler. Servidor antigo (sem a rota) responde 404: nada."""
+        try:
+            status, dados = self._pedir("GET", "/ponte/leituras/proxima")
+        except PainelErro as exc:
+            if exc.status == 404:
+                return None
+            raise
+        if status == 204 or not dados:
+            return None
+        return json.loads(dados.decode("utf-8"))
+
+    def responder_leitura(self, prazo_id: int, resposta: str, reserva: str | None = None) -> None:
+        corpo = {"resposta": resposta} | ({"reserva": reserva} if reserva else {})
+        self._json(f"/ponte/leituras/{int(prazo_id)}", corpo)
+
+    def falhar_leitura(self, prazo_id: int, motivo: str, reserva: str | None = None) -> None:
+        corpo = {"falha": motivo} | ({"reserva": reserva} if reserva else {})
+        self._json(f"/ponte/leituras/{int(prazo_id)}", corpo)
+
     def falha(self, demanda: int, n: int, motivo: str, detalhe: str) -> None:
         self._json(f"/ponte/demanda/{int(demanda)}/falha",
                    {"n": n, "motivo": motivo, "detalhe": detalhe})

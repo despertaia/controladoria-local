@@ -51,7 +51,7 @@ def test_novidades_do_mesmo_processo_juntam_no_cartao_aberto(conn):
     assert quadro.adicionar_item(conn, A, "aviso", "1grau:77", "2026-10-01") == (1, False)
     assert quadro.adicionar_item(conn, A, "publicacao", "10", "2026-10-03") is None
     assert _cartoes(conn) == [(A, "chegou", "2026-10-01")]  # referência = a mais antiga
-    tipos = [e["tipo"] for e in eventos.listar(conn, A)]
+    tipos = [e["tipo"] for e in eventos.listar(conn, A) if not e["tipo"].startswith("prazo_")]
     assert tipos == ["demanda_criada", "demanda_item_juntado"]
 
 

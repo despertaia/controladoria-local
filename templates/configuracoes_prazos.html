@@ -1,0 +1,139 @@
+{% extends "base.html" %}
+{% block titulo %}Configurações de prazos · Controladoria{% endblock %}
+{% block conteudo %}
+{% macro acoes_do_dia(d) %}
+            <details><summary class="btn btn-pequeno btn-secundario">Corrigir</summary>
+              <form method="post" action="{{ url_for('configuracoes_prazos_corrigir_dia', dia_id=d.id) }}" class="prazo-formulario">
+                <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+                <label>Tipo <select name="tipo">{% for valor, rotulo in tipos.items() %}<option value="{{ valor }}"{% if valor == d.tipo %} selected{% endif %}>{{ rotulo }}</option>{% endfor %}</select></label>
+                <label>O que é <input type="text" name="descricao" value="{{ d.descricao }}" required maxlength="160"></label>
+                <label>Fonte <input type="text" name="fonte" value="{{ d.fonte }}" required maxlength="200"></label>
+                <button type="submit" class="btn btn-pequeno">Guardar</button>
+              </form>
+            </details>
+            {% if d.ativo %}
+            <form method="post" action="{{ url_for('configuracoes_prazos_desativar', dia_id=d.id) }}" onsubmit="return confirm('Tirar este dia da conta? A linha fica guardada.');">
+              <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+              <button type="submit" class="btn btn-pequeno btn-secundario">Retirar</button>
+            </form>
+            {% else %}
+            <small class="prazo-numero">Para voltar a valer, inclua o dia de novo.</small>
+            {% endif %}
+{% endmacro %}
+{# Descrição e fonte dos dias podem ter sido digitadas por alguém: saem pelo escape automático. #}
+<div class="config-lex config-prazos">
+  <a href="{{ url_for('lista') }}" class="voltar">← Voltar ao Cockpit</a>
+  <h1>Configurações de prazos</h1>
+  {% include "_config_subnav.html" %}
+  {% if lembrete %}<p class="aviso aviso-erro" role="status">{{ lembrete }}</p>{% endif %}
+
+  {% if not modo_apresentacao %}
+  <section class="cartao" aria-labelledby="titulo-d-padrao">
+    <h2 id="titulo-d-padrao">Data de trabalho padrão</h2>
+    <p>Em dias úteis antes da fatal. Vale para o prazo em que você não escolher outra.</p>
+    <form method="post" action="{{ url_for('configuracoes_prazos_padrao') }}" class="prazo-inline">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <select name="d" aria-label="Data de trabalho padrão">
+        {% for d in d_validos %}<option value="{{ d }}"{% if d == d_padrao %} selected{% endif %}>D-{{ d }}</option>{% endfor %}
+      </select>
+      <button type="submit" class="btn btn-pequeno">Guardar</button>
+    </form>
+  </section>
+  {% endif %}
+
+  {% if not modo_apresentacao %}
+  <section class="cartao" aria-labelledby="titulo-agenda">
+    <h2 id="titulo-agenda">Agenda</h2>
+    <p>{% if modo_local %}Cada prazo entra{% else %}Assine no Google ou na Apple. Cada prazo entra{% endif %} com um evento na data fatal e outro na data de trabalho, com lembrete às 9h do dia anterior. O evento leva só o número do processo e o ato, sem nome de cliente nem de parte. O que você não conferiu entra com «[A CONFERIR]». O prazo conferido cuja data fatal passou há mais de {{ agenda_janela_dias }} dias sai da agenda.</p>
+    <p class="aviso aviso-erro" role="note"><strong>Quem tiver o endereço vê os números dos processos e os atos dos seus prazos, sem pedir senha.</strong> Não o envie a ninguém de fora. Se vazar, revogue.</p>
+    {% if agenda_url %}
+    <p class="aviso aviso-erro" role="alert"><strong>Esta é a única vez que o endereço aparece.</strong> Copie agora. Não recarregue esta página: recarregar gera outro endereço, e este deixa de valer.</p>
+    <div class="chave-visivel"><input type="text" class="busca" value="{{ agenda_url }}" readonly autocomplete="off" spellcheck="false" onfocus="this.select()" aria-label="Endereço da agenda"></div>
+    {% elif agenda_ligada %}
+    <p>Há um endereço ativo{% if agenda_criada_em %}, gerado em {{ agenda_criada_em[8:10] }}/{{ agenda_criada_em[5:7] }}/{{ agenda_criada_em[0:4] }}{% endif %}. Por segurança ele não aparece de novo: para assinar em outro aparelho, gere outro endereço (o atual deixa de valer).</p>
+    {% else %}
+    <p>Nenhum endereço ativo.</p>
+    {% endif %}
+    <p class="subtitulo">Limites do serviço de agenda: a atualização de um calendário assinado pode levar horas, e nem todo serviço respeita o lembrete de um calendário assinado. Uma data que mudou, ou um prazo cumprido, pode continuar no seu calendário por esse tempo. Confira sempre no painel.</p>
+    {% if modo_local %}
+    <p>Nesta instalação o endereço é 127.0.0.1: ele vale só neste computador, e o celular não alcança esse endereço. Para ter os prazos no celular, baixe o arquivo e importe no calendário dele. O arquivo é uma cópia de agora e não se atualiza sozinho: baixe de novo quando os prazos mudarem. Confira sempre no painel.</p>
+    <p><a class="btn btn-pequeno" href="{{ url_for('agenda_baixar') }}">Baixar agenda</a></p>
+    {% endif %}
+    <div class="prazo-botoes">
+      <form method="post" action="{{ url_for('configuracoes_prazos_agenda_gerar') }}"{% if agenda_ligada %} onsubmit="return confirm('Gerar outro endereço faz o atual deixar de valer. Continuar?');"{% endif %}>
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-pequeno">{{ 'Gerar outro endereço' if agenda_ligada else 'Gerar endereço' }}</button>
+      </form>
+      {% if agenda_ligada %}
+      <form method="post" action="{{ url_for('configuracoes_prazos_agenda_revogar') }}" onsubmit="return confirm('Revogar o endereço? A agenda assinada para de atualizar.');">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <button type="submit" class="btn btn-pequeno btn-secundario">Revogar</button>
+      </form>
+      {% endif %}
+    </div>
+  </section>
+  {% endif %}
+
+  <section class="cartao" aria-labelledby="titulo-calendario">
+    <h2 id="titulo-calendario">Calendário forense</h2>
+    <p>Feriados, recessos e suspensões usados na conta, com a fonte e a origem de cada um. Versão {{ versao }}. Mudou a tabela, os prazos em aberto são recalculados e você é avisado se a data mudar.</p>
+    <p>O feriado municipal é seu: cadastre os da sua comarca. A comarca do processo sai do texto do órgão julgador; sem casar, vale só o geral. Faltar um feriado leva a uma data mais cedo, o lado seguro.</p>
+    <form method="get" action="{{ url_for('configuracoes_prazos') }}" class="prazo-inline">
+      <label>Tribunal
+        <select name="tribunal">{% for s in siglas %}<option value="{{ s }}"{% if s == filtro_tribunal %} selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>
+      <label>Ano <input type="number" name="ano" value="{{ ano }}"></label>
+      <button type="submit" class="btn btn-pequeno btn-secundario">Ver</button>
+      <a class="btn btn-pequeno btn-secundario" href="{{ url_for('configuracoes_prazos', tribunal=filtro_tribunal, ano=ano - 1) }}">← {{ ano - 1 }}</a>
+      <a class="btn btn-pequeno btn-secundario" href="{{ url_for('configuracoes_prazos', tribunal=filtro_tribunal, ano=ano + 1) }}">{{ ano + 1 }} →</a>
+    </form>
+    {% if not modo_apresentacao %}
+    <details class="prazo-incluir"><summary>Incluir um dia</summary>
+      <form method="post" action="{{ url_for('configuracoes_prazos_incluir') }}" class="prazo-formulario">
+        <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+        <label>Data <input type="date" name="data" required></label>
+        <label>Tribunal
+          <select name="tribunal"><option value="">Todos os tribunais</option>
+            {% for s in siglas %}<option value="{{ s }}"{% if s == filtro_tribunal %} selected{% endif %}>{{ s }}</option>{% endfor %}</select></label>
+        <label>Comarca, vazia para todas <input type="text" name="comarca" maxlength="80"></label>
+        <label>Tipo
+          <select name="tipo">{% for valor, rotulo in tipos.items() %}<option value="{{ valor }}">{{ rotulo }}</option>{% endfor %}</select></label>
+        <label>O que é <input type="text" name="descricao" required maxlength="160"></label>
+        <label>Fonte <input type="text" name="fonte" required maxlength="200"></label>
+        <label>Calendário geral do tribunal, por ato oficial?
+          <select name="origem"><option value="manual">Não: anotação minha</option><option value="ato">Sim: conta como calendário cadastrado do ano</option></select></label>
+        <button type="submit" class="btn btn-pequeno">Incluir</button>
+      </form>
+    </details>
+    {% endif %}
+    <div class="tabela-wrap"><table class="tabela tabela-calendario">
+      <thead><tr><th>Data</th><th>Tribunal</th><th>Comarca</th><th>Tipo</th><th>O que é</th><th>Fonte</th><th>Origem</th>{% if not modo_apresentacao %}<th></th>{% endif %}</tr></thead>
+      <tbody>
+        {% for linha in linhas_do_calendario %}
+        {% set d = linha.dias[0] %}
+        <tr{% if not d.ativo %} class="dia-inativo"{% endif %}>
+          <td>{% if linha.grupo %}de {{ linha.de_br }} a {{ linha.ate_br }} <small class="prazo-numero">({{ linha.dias|length }} dias)</small>{% else %}{{ d.data_br }}{% endif %}</td>
+          <td>{{ d.tribunal or 'Todos' }}</td><td>{{ d.comarca or 'Todas' }}</td>
+          <td>{{ d.tipo_rotulo }}{% if not d.ativo %} <span class="selo selo-neutro">Fora da conta</span>{% endif %}</td>
+          <td>{{ d.descricao }}</td><td>{{ d.fonte }}</td><td>{{ d.origem_rotulo }}</td>
+          {% if not modo_apresentacao %}
+          <td class="acao">
+            {% if linha.grupo %}
+            <details class="dias-do-grupo"><summary class="btn btn-pequeno btn-secundario">Ver os {{ linha.dias|length }} dias</summary>
+              <ul>
+                {% for dia in linha.dias %}
+                <li><strong>{{ dia.data_br }}</strong> {{ acoes_do_dia(dia) }}</li>
+                {% endfor %}
+              </ul>
+            </details>
+            {% else %}{{ acoes_do_dia(d) }}{% endif %}
+          </td>
+          {% endif %}
+        </tr>
+        {% else %}
+        <tr><td colspan="8">Nenhum dia cadastrado para {{ filtro_tribunal }} em {{ ano }}.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table></div>
+  </section>
+</div>
+{% endblock %}

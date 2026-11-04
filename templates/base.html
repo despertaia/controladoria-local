@@ -42,8 +42,10 @@
         {% set na_carteira = request.endpoint in ('carteira_tela', 'processo') %}
         {% set nos_grupos = request.endpoint and request.endpoint.startswith('grupo') %}
         {% set nos_resultados = request.endpoint == 'resultados_tela' %}
+        {% set nos_prazos = request.endpoint in ('prazos_lista', 'prazo_tela') %}
         <a href="{{ url_for('lista') }}" class="{{ 'ativo' if no_cockpit }}"{% if no_cockpit %} aria-current="page"{% endif %}>Cockpit{% if na_triagem %} <span class="contador contador-nav" aria-label="{{ na_triagem }} na triagem">{{ na_triagem }}</span>{% endif %}</a>
         <a href="{{ url_for('carteira_tela') }}" class="{{ 'ativo' if na_carteira }}"{% if na_carteira %} aria-current="page"{% endif %}>Carteira</a>
+        <a href="{{ url_for('prazos_lista') }}" class="{{ 'ativo' if nos_prazos }}"{% if nos_prazos %} aria-current="page"{% endif %}>Prazos{% if prazos_nav %} <span class="contador contador-nav contador-alerta" aria-label="{{ prazos_nav }} pedem atenção">{{ prazos_nav }}</span>{% endif %}</a>
         <a href="{{ url_for('grupos_lista') }}" class="{{ 'ativo' if nos_grupos }}"{% if nos_grupos %} aria-current="page"{% endif %}>Grupos</a>
         <a href="{{ url_for('resultados_tela') }}" class="{{ 'ativo' if nos_resultados }}"{% if nos_resultados %} aria-current="page"{% endif %}>Resultados</a>
       </nav>
@@ -73,7 +75,7 @@
         </form>
         {% endif %}
         {% if session.logado or not painel_exige_login %}
-        <a href="{{ url_for('configuracoes_lex') }}" class="btn-config{{ ' ativo' if request.endpoint and (request.endpoint.startswith('configuracoes_lex') or request.endpoint.startswith('configuracoes_tribunais')) }}" aria-label="Configurações do Lex" title="Configurações do Lex">⚙</a>
+        <a href="{{ url_for('configuracoes_lex') }}" class="btn-config{{ ' ativo' if request.endpoint and (request.endpoint.startswith('configuracoes_lex') or request.endpoint.startswith('configuracoes_tribunais') or request.endpoint.startswith('configuracoes_prazos')) }}" aria-label="Configurações do Lex" title="Configurações do Lex">⚙</a>
         {% endif %}
         <button type="button" class="btn-tema" id="btn-tema" aria-label="Alternar tema claro e escuro" aria-pressed="false" title="Tema claro/escuro">◐</button>
         {% if session.logado %}
@@ -94,11 +96,14 @@
   {% for aviso in avisos_conexao %}
   <div class="faixa-alerta" role="alert">{{ aviso.texto }} <a href="{{ url_for('configuracoes_tribunais') }}">Abrir Configurações › Tribunais</a></div>
   {% endfor %}
+  {% if faixa_prazos %}
+  <div class="faixa-alerta faixa-prazos" role="status">{{ faixa_prazos.texto }} <a href="{{ url_for('prazos_lista') }}">Abrir Prazos</a></div>
+  {% endif %}
 
   <main class="conteudo">
     {% with mensagens = get_flashed_messages(with_categories=true) %}
       {% for categoria, texto in mensagens %}
-        <div class="aviso aviso-{{ categoria }}">{{ texto }}</div>
+        <div class="aviso aviso-{{ categoria }}" data-aviso-da-acao>{{ texto }}</div>
       {% endfor %}
     {% endwith %}
 

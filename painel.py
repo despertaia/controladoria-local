@@ -26,7 +26,7 @@ import sys
 import tempfile
 import warnings
 import zipfile
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from urllib.parse import urlparse
 
 from dotenv import load_dotenv
@@ -34,6 +34,7 @@ from flask import (
     Flask, Response, abort, flash, jsonify, make_response, redirect, render_template,
     request, send_file, session, url_for,
 )
+from markupsafe import Markup
 
 warnings.filterwarnings("ignore", message="urllib3 v2 only supports OpenSSL")
 
@@ -52,6 +53,7 @@ from captura.processo_parser import (  # noqa: E402
     classificar_lista, formatar_numero_cnj, validar_cnj,
 )
 from nucleo import acoes_processo  # noqa: E402
+from nucleo import agenda as nucleo_agenda  # noqa: E402
 from nucleo import apresentacao  # noqa: E402
 from nucleo import banco  # noqa: E402
 from nucleo import djen  # noqa: E402
@@ -63,6 +65,8 @@ from nucleo import config as nucleo_config  # noqa: E402
 from nucleo import credenciais as nucleo_credenciais  # noqa: E402
 from nucleo import painel_dados  # noqa: E402
 from nucleo import ponte as nucleo_ponte  # noqa: E402
+from nucleo import prazos_banco as nucleo_prazos_banco  # noqa: E402
+from nucleo import prazos_tela  # noqa: E402
 from nucleo import quadro as nucleo_quadro  # noqa: E402
 from nucleo import tarefas_fila  # noqa: E402
 from nucleo import trabalhador as nucleo_trabalhador  # noqa: E402
@@ -113,7 +117,8 @@ app.config.update(SESSION_COOKIE_SAMESITE="Lax")
 if PAINEL_SENHA:
     app.config.update(SESSION_COOKIE_SECURE=True)
 # Rotas acessíveis sem login (a própria tela de login e os arquivos estáticos).
-_ROTAS_PUBLICAS = {"login", "static", "saude"}
+# A agenda assinada (`agenda_ics`) entra pelo token próprio: o serviço de calendário não faz login.
+_ROTAS_PUBLICAS = {"login", "static", "saude", "agenda_ics"}
 # Rotas da ponte do Lex: autenticam pela chave dedicada, sem login nem CSRF. O conjunto
 # é preenchido por `_exige_chave_ponte` (só rota com o decorador entra; o caminho
 # começar com /ponte/ não basta).
@@ -214,6 +219,12 @@ _INDISPONIVEIS_NA_APRESENTACAO = {
     "carteira_arquivar", "carteira_desarquivar", "carteira_excluir",
     "carteira_restaurar_da_lixeira",  # 1.5.0: as ações de arquivo somem no modo
     "demanda_pasta_abrir",  # o caminho da pasta do caso fica oculto na apresentação
+    # 1.6.0: as ações de prazo somem no modo
+    "prazo_conferir", "prazo_corrigir", "prazo_descartar", "prazo_trabalho", "prazo_dobro",
+    "prazo_cumprido", "prazo_desfazer_cumprido", "prazo_fatal", "prazo_ciencia",
+    "prazo_ler_de_novo", "configuracoes_prazos_padrao", "configuracoes_prazos_incluir",
+    "configuracoes_prazos_corrigir_dia", "configuracoes_prazos_desativar",
+    "configuracoes_prazos_agenda_gerar", "configuracoes_prazos_agenda_revogar", "agenda_baixar",
 }
 PREFIXO_TRIBUNAIS = "/configuracoes/tribunais"
 _APELIDO = re.compile(r"p[0-9a-f]{12}")
@@ -740,13 +751,31 @@ def demanda_mover(demanda_id: int):
                                     agora=painel_dados.agora_cuiaba())
     except nucleo_quadro.MovimentoInvalido as exc:
         return _resposta_quadro(False, str(exc))
+    except nucleo_prazos_banco.TransacaoPerdida as exc:
+        # A transação inteira se foi (o movimento também): nada mudou.
+        logging.getLogger(__name__).warning("mover: transação perdida (%s)", type(exc).__name__)
+        return _resposta_quadro(False, nucleo_quadro.MSG_PRAZOS_NAO_VOLTARAM)
     except sqlite3.IntegrityError:
         # Corrida rara: o índice "um cartão novo por processo" recusou no meio do caminho.
+        # (Erro durante o desfazer dos prazos chega como PrazosNaoVoltaram, acima.)
         return _resposta_quadro(False, "Já há um cartão novo deste processo esperando triagem.")
+    except sqlite3.OperationalError as exc:  # trava de escrita além do tempo: nada foi feito
+        logging.getLogger(__name__).warning("mover: banco (%s)", type(exc).__name__)
+        return _resposta_quadro(False, MSG_BANCO_OCUPADO)
     finally:
         conn.close()
-    return _resposta_quadro(True, f"Movido para “{nucleo_quadro.COLUNAS[r['para']]}”.",
-                            r["desfazer"])
+    mensagem = f"Movido para “{nucleo_quadro.COLUNAS[r['para']]}”."
+    if r.get("prazos_falha"):
+        mensagem = ("O cartão foi movido, mas os prazos dele não foram marcados. "
+                    "Confira na aba Prazos.")
+    else:
+        n, sem_data = r.get("prazos_cumpridos", 0), r.get("prazos_nao_lidos", 0)
+        if n:
+            mensagem += " 1 prazo marcado como cumprido." if n == 1 else f" {n} prazos marcados como cumpridos."
+        if sem_data:
+            mensagem += (" 1 ainda sem data continua aberto." if sem_data == 1
+                         else f" {sem_data} ainda sem data continuam abertos.")
+    return _resposta_quadro(True, mensagem, r["desfazer"])
 
 
 @app.route("/demanda/<int:demanda_id>/pasta/abrir", methods=["POST"])
@@ -1521,8 +1550,8 @@ def _pasta_das_pecas() -> str:
     return os.getenv("CONTROLADORIA_PECAS", "dados/pecas")
 
 
-def _exige_chave_ponte(rota):
-    """Exige `Authorization: Bearer <chave>`; abre o banco, registra o contato do Mac e
+def _com_chave_da_ponte(rota, registrar):
+    """Exige `Authorization: Bearer <chave>`; abre o banco, registra o contato com `registrar` e
     passa a conexão à rota (fechada ao fim). Chave ausente ou errada: 401 (e conta a
     tentativa nas Configurações). Registra a rota como da ponte (sem login nem CSRF)."""
     _ENDPOINTS_PONTE.add(rota.__name__)
@@ -1538,10 +1567,30 @@ def _exige_chave_ponte(rota):
                     nucleo_ponte.registrar_chave_invalida(conn)
                 return _erro_ponte("chave inválida", 401)
             with conn:
-                nucleo_ponte.registrar_contato(conn)
+                registrar(conn)
             return rota(conn, *args, **kwargs)
         finally:
             conn.close()
+    return envolta
+
+
+def _exige_chave_ponte(rota):
+    """A rota do Mac do squad: o pedido conta como contato do Mac."""
+    return _com_chave_da_ponte(rota, nucleo_ponte.registrar_contato)
+
+
+def _exige_chave_do_leitor(rota):
+    """A rota do leitor de prazos: o pedido conta só como contato do leitor, nunca do Mac do
+    squad. Banco ocupado responde 503, e o leitor espera e tenta de novo."""
+    com_chave = _com_chave_da_ponte(rota, nucleo_ponte.registrar_contato_do_leitor)
+
+    @functools.wraps(rota)
+    def envolta(*args, **kwargs):
+        try:
+            return com_chave(*args, **kwargs)
+        except sqlite3.OperationalError as exc:
+            logging.getLogger(__name__).warning("leitura de prazo: banco (%s)", type(exc).__name__)
+            return _erro_ponte("banco ocupado", 503)
     return envolta
 
 
@@ -1575,6 +1624,50 @@ def ponte_proximo(conn):
     if pacote is None:
         return "", 204
     return jsonify(pacote)
+
+
+_LEITURA_MAX_CORPO = 64 * 1024
+
+
+@app.route("/ponte/leituras/proxima")
+@_exige_chave_do_leitor
+def ponte_leitura_proxima(conn):
+    """A próxima publicação para o Lex ler. Fila e fio próprios: não espera peça nenhuma."""
+    with conn:  # reserva numa transação só
+        pacote = nucleo_prazos_banco.proxima_leitura(conn, painel_dados.agora_cuiaba())
+    if pacote is None:
+        return "", 204
+    return jsonify(pacote)
+
+
+@app.route("/ponte/leituras/<int:prazo_id>", methods=["POST"])
+@_exige_chave_do_leitor
+def ponte_leitura_resposta(conn, prazo_id: int):
+    """A resposta crua do Lex, conferida aqui no servidor, ou o aviso de falha. Resposta ou
+    falha tardia (o prazo já foi lido por outro leitor ou preenchido à mão) é um 409 limpo."""
+    if (request.content_length or 0) > _LEITURA_MAX_CORPO:
+        return _erro_ponte("Pedido inválido.", 400)
+    if len(request.get_data(cache=True)) > _LEITURA_MAX_CORPO:  # o tamanho lido, não o declarado
+        return _erro_ponte("Pedido inválido.", 400)
+    corpo = request.get_json(silent=True)
+    if not isinstance(corpo, dict):
+        return _erro_ponte("Pedido inválido.", 400)
+    resposta, falha, reserva = corpo.get("resposta"), corpo.get("falha"), corpo.get("reserva")
+    if falha is not None and falha not in nucleo_prazos_banco.MOTIVOS_DE_FALHA:
+        return _erro_ponte("Campo “falha” inválido.", 400)
+    if falha is None and not isinstance(resposta, str):
+        return _erro_ponte("Campo “resposta” inválido.", 400)
+    if reserva is not None and not isinstance(reserva, str):
+        return _erro_ponte("Campo “reserva” inválido.", 400)
+    try:
+        with conn:
+            if falha is not None:
+                nucleo_prazos_banco.falhar_leitura(conn, prazo_id, falha, reserva)
+                return jsonify({"ok": True})
+            estado = nucleo_prazos_banco.aplicar_leitura(conn, prazo_id, resposta, reserva)
+    except nucleo_prazos_banco.PrazoInvalido as exc:
+        return _erro_ponte(str(exc), 409)
+    return jsonify({"ok": True, "estado": estado})
 
 
 @app.route("/ponte/contato", methods=["POST"])
@@ -1867,13 +1960,23 @@ def _acao_de_arquivo(acao: str):
     try:
         with conn:
             r = acoes_processo.aplicar(conn, acao, numeros)
+        # Prazo não some sozinho: quem arquiva ou exclui fica sabendo que ele continua correndo.
+        # O processo já foi arquivado: se o aviso falhar, o arquivamento não vira erro.
+        extra = ""
+        if acao in ("arquivar", "excluir") and r.feitos:
+            try:
+                extra = prazos_tela.aviso_de_arquivar(conn, r.feitos, painel_dados.hoje_cuiaba())
+            except Exception as exc:  # noqa: BLE001 - o aviso é um extra
+                logging.getLogger(__name__).warning("arquivar: aviso de prazos falhou (%s)",
+                                                    type(exc).__name__)
     except acoes_processo.LoteGrande as exc:
         return _resposta_acao(False, str(exc))
     except nucleo_quadro.MovimentoInvalido:
         return _resposta_acao(False, "O quadro mudou enquanto você agia. Tente de novo.")
     finally:
         conn.close()
-    return _resposta_acao(acoes_processo.deu_certo(r), acoes_processo.mensagem(acao, r))
+    texto = acoes_processo.mensagem(acao, r)
+    return _resposta_acao(acoes_processo.deu_certo(r), f"{texto} {extra}".strip())
 
 
 @app.route("/carteira/arquivar", methods=["POST"])
@@ -1898,6 +2001,550 @@ def carteira_excluir():
 def carteira_restaurar_da_lixeira():
     """«Restaurar» (lixeira): o processo volta para onde estava, com os cartões."""
     return _acao_de_arquivo("restaurar")
+
+
+# ---------------------------------------------------------------------------
+# Prazos (1.6.0): telas e ações. A conta e os estados ficam em nucleo/prazos_banco.py.
+# ---------------------------------------------------------------------------
+
+_VISTAS_DE_PRAZO = ("lista", "semana", "mes")
+
+# A confirmação de arquivar ou excluir diz o que ainda corre no processo (cartão e página).
+
+
+@app.context_processor
+def _ctx_prazos():
+    """O contador do menu e a faixa do topo. A faixa nunca derruba a página."""
+    vazio = {"prazos_nav": 0, "faixa_prazos": None}
+    if _login_exigido() and not session.get("logado"):
+        return vazio
+    try:
+        conn = banco.conectar()
+        try:
+            hoje = painel_dados.hoje_cuiaba()
+            return {"prazos_nav": prazos_tela.contador_nav(conn, hoje),
+                    "faixa_prazos": prazos_tela.faixa(conn, hoje)}
+        finally:
+            conn.close()
+    except Exception as exc:  # noqa: BLE001 - a faixa é um extra: a página abre sem ela
+        logging.getLogger(__name__).warning("prazos: faixa do topo falhou (%s)", type(exc).__name__)
+        return vazio
+
+
+def _data_da_consulta(valor: str | None, padrao):
+    """O dia pedido na aba. Dia que não existe ou que está fora do alcance dos prazos (do começo
+    do calendário até alguns anos adiante) volta ao padrão: a grade não anda até o fim do tempo."""
+    try:
+        dia = date.fromisoformat(valor or "")
+    except ValueError:
+        return padrao
+    ultimo = date(padrao.year + nucleo_prazos_banco.ANOS_A_FRENTE, 12, 31)
+    return dia if nucleo_prazos_banco.DATA_MINIMA <= dia <= ultimo else padrao
+
+
+def _lex_conectado(conn) -> bool:
+    """O Lex que lê os prazos está de pé: o leitor consultou a fila de leitura há pouco, e o Mac
+    (se está de pé) não avisou que perdeu o acesso ao plano."""
+    agora = painel_dados.agora_cuiaba()
+    return (nucleo_ponte.leitor_conectado(conn, agora)
+            and not nucleo_ponte.mac_sem_plano(conn, agora))
+
+
+def _alcance_dos_cartoes(conn) -> None:
+    """Ao abrir a aba, os cartões abertos que ainda não têm prazo ganham o seu (a mesma rotina
+    que roda no fim de toda varredura; idempotente). É a única escrita de uma tela de leitura,
+    e por isso nunca derruba a página nem roda no modo apresentação, que só mostra."""
+    if _modo_apresentacao():
+        return
+    try:
+        # Já feito uma vez: a abertura da aba só lê, não pede a trava de escrita nem regrava a marca
+        # (cartão que chega depois ganha o prazo em `quadro.adicionar_item`, e a varredura recupera).
+        if nucleo_config.ler(conn, nucleo_prazos_banco.CHAVE_ALCANCE):
+            return
+        with conn:
+            nucleo_prazos_banco.criar_dos_cartoes_abertos(conn)
+    except Exception as exc:  # noqa: BLE001 - a aba abre mesmo assim; a varredura tenta de novo
+        logging.getLogger(__name__).warning("prazos: alcance dos cartões falhou (%s)",
+                                            type(exc).__name__)
+
+
+@app.route("/prazos")
+def prazos_lista():
+    vista = request.args.get("vista")
+    vista = vista if vista in _VISTAS_DE_PRAZO else "lista"
+    hoje = painel_dados.hoje_cuiaba()
+    ref = _data_da_consulta(request.args.get("ref"), hoje)
+    conn = banco.conectar()
+    try:
+        _alcance_dos_cartoes(conn)
+        grupos = prazos_tela.lista(conn, hoje) if vista == "lista" else None
+        grade = None if vista == "lista" else prazos_tela.grade(conn, ref, hoje, vista)
+        lex_conectado = _lex_conectado(conn)
+    finally:
+        conn.close()
+    if _modo_apresentacao():  # num lugar só: o que a apresentação mostra sai desta função
+        if grupos is not None:
+            grupos = {chave: [prazos_tela.para_apresentacao(l) for l in linhas]
+                      for chave, linhas in grupos.items()}
+        if grade is not None:
+            grade["dias"] = [{**d, "itens": [prazos_tela.para_apresentacao(i) for i in d["itens"]]}
+                             for d in grade["dias"]]
+    return render_template("prazos.html", vista=vista, grupos=grupos, grade=grade,
+                           lex_conectado=lex_conectado)
+
+
+@app.route("/prazos/<int:prazo_id>")
+def prazo_tela(prazo_id: int):
+    conn = banco.conectar()
+    try:
+        try:
+            prazo = prazos_tela.detalhe(conn, prazo_id, painel_dados.hoje_cuiaba())
+        except (nucleo_prazos_banco.PrazoInvalido, OverflowError):  # id que não cabe no banco
+            abort(404)
+        lex_conectado = _lex_conectado(conn)
+    finally:
+        conn.close()
+    if _modo_apresentacao():
+        prazo = prazos_tela.para_apresentacao(prazo)
+    return render_template("prazo.html", prazo=prazo, lex_conectado=lex_conectado,
+                           max_dias=nucleo_prazos_banco.MAX_DIAS,
+                           limite_do_ato=nucleo_prazos_banco.LIMITE_ATO)
+
+
+def _contexto_das_configuracoes_de_prazos(conn) -> dict:
+    """O que a tela de Configurações de prazos mostra. A agenda assinada entra só como «existe um
+    endereço ou não»: o endereço em si aparece uma vez, na resposta que o gera (`agenda_url`)."""
+    hoje = painel_dados.hoje_cuiaba()
+    siglas = [t.sigla for t in nucleo_tribunal.configurados()]
+    filtro_tribunal = (request.args.get("tribunal") or "").strip().upper()
+    if filtro_tribunal not in siglas:
+        filtro_tribunal = siglas[0]
+    try:
+        ano = int(request.args.get("ano") or hoje.year)
+    except ValueError:
+        ano = hoje.year
+    primeiro, ultimo = (nucleo_prazos_banco.DATA_MINIMA.year,
+                        hoje.year + nucleo_prazos_banco.ANOS_A_FRENTE)
+    if not primeiro <= ano <= ultimo:
+        ano = hoje.year
+    dias = prazos_tela.dias_do_calendario(conn, filtro_tribunal, ano)
+    return {"dias": dias, "linhas_do_calendario": prazos_tela.agrupar_dias(dias),
+            "lembrete": prazos_tela.lembrete_calendario(conn, hoje, siglas),
+            "d_padrao": nucleo_prazos_banco.d_padrao(conn),
+            "versao": nucleo_prazos_banco.versao_calendario(conn),
+            "filtro_tribunal": filtro_tribunal, "ano": ano, "siglas": siglas,
+            "tipos": prazos_tela.ROTULOS_DE_DIA, "d_validos": nucleo_prazos_banco.D_VALIDOS,
+            "agenda_ligada": nucleo_agenda.tem_token(conn),
+            "agenda_criada_em": nucleo_agenda.criado_em(conn)[:10], "agenda_url": None,
+            "agenda_janela_dias": nucleo_agenda.JANELA_DA_AGENDA_DIAS}
+
+
+@app.route("/configuracoes/prazos")
+def configuracoes_prazos():
+    conn = banco.conectar()
+    try:
+        contexto = _contexto_das_configuracoes_de_prazos(conn)
+    finally:
+        conn.close()
+    return render_template("configuracoes_prazos.html", **contexto)
+
+
+MSG_PRAZO_FALHOU = "Não foi possível concluir agora. Nada foi alterado; tente de novo."
+MSG_BANCO_OCUPADO = "O banco está ocupado agora. Nada foi alterado; tente de novo."
+MSG_DATAS_NAO_REFEITAS = ("Não foi possível refazer as datas dos prazos. Nada foi alterado; "
+                          "tente de novo.")
+MSG_NAO_E_MEU = ("Este processo está marcado como «Não é meu». Confirme que ele é seu antes de "
+                 "pedir uma nova leitura.")
+MSG_NADA_MUDOU = "Nada foi alterado: os campos são iguais aos que já estão."
+MSG_PRAZO_MUDOU = ("Este prazo mudou depois que você abriu a tela. Veja a data nova e confira "
+                   "de novo.")
+
+
+def _por_quem() -> str:
+    return PAINEL_USUARIO or "advogado"
+
+
+class _AcaoFalhou(Exception):
+    """A ação não valeu: o texto (em português) vai à tela, e a transação foi desfeita."""
+
+    def __init__(self, texto: str, ausente: bool = False, destino: str | None = None):
+        super().__init__(texto)
+        self.texto, self.ausente, self.destino = texto, ausente, destino
+
+
+def _barreira_de_acao():
+    """Defesa da própria ação, além dos filtros de pedido: nada de prazo roda no modo
+    apresentação nem sem login (quando ele está ligado)."""
+    if _modo_apresentacao():
+        return _indisponivel()
+    if _login_exigido() and not session.get("logado"):
+        return redirect(url_for("login", proximo=request.path))
+    return None
+
+
+def _rodar_acao(acao, falha: str = MSG_PRAZO_FALHOU):
+    """Roda `acao(conn)` numa transação só. Dado ruim vira a mensagem do próprio erro; qualquer
+    outra falha, uma frase fixa (o que o erro diz pode trazer texto da publicação) e o tipo vai
+    ao registro técnico. Em qualquer falha a transação é desfeita por inteiro."""
+    conn = None
+    try:
+        conn = banco.conectar()
+        with conn:
+            if not conn.in_transaction:
+                # a trava de escrita vem antes da primeira leitura: o que a ação lê é o que ela
+                # grava, e uma escrita de outro no meio não se perde na gravação da linha inteira
+                conn.execute("BEGIN IMMEDIATE")
+            return acao(conn)
+    except _AcaoFalhou:
+        raise
+    except nucleo_prazos_banco.PrazoInvalido as exc:
+        raise _AcaoFalhou(str(exc)) from None
+    except (nucleo_prazos_banco.TransacaoPerdida, sqlite3.Error) as exc:
+        logging.getLogger(__name__).warning("prazos: ação falhou (%s)", type(exc).__name__)
+        raise _AcaoFalhou(MSG_BANCO_OCUPADO if isinstance(exc, sqlite3.OperationalError)
+                          else falha) from None
+    except Exception as exc:  # noqa: BLE001 - a tela diz que falhou, nunca devolve 500
+        logging.getLogger(__name__).warning("prazos: ação falhou (%s)", type(exc).__name__)
+        raise _AcaoFalhou(falha) from None
+    finally:
+        if conn is not None:
+            conn.close()
+
+
+def _versao_confere(conn, prazo_id: int) -> None:
+    """A ação age sobre o que o advogado viu: o formulário traz a versão da tela (`fatal` e o
+    momento da última mudança), e ela tem de ser a de agora, lida na mesma transação da ação.
+    Sem ela, ou com outra, nada muda."""
+    enviada = request.form.get("versao") or ""
+    atual = prazos_tela.versao_do_prazo(nucleo_prazos_banco.obter(conn, prazo_id))
+    if not enviada or not hmac.compare_digest(enviada.encode(), atual.encode()):
+        raise _AcaoFalhou(MSG_PRAZO_MUDOU, destino=f"/prazos/{prazo_id}")
+
+
+def _acao_de_prazo(prazo_id: int, acao, mensagem: str, com_versao: bool = False,
+                   sem_mudanca: str = "Nada mudou: o prazo já estava assim.",
+                   com_link_do_prazo: bool = False):
+    """Uma ação sobre um prazo: numa transação só, com o aviso na tela e a volta à página de
+    origem. Dado ruim ou estado incoerente desfaz tudo e diz por quê. `com_versao`: exige a
+    versão da tela (ações sobre o que se está vendo). Se `acao` devolve False, nada mudou."""
+    if (barreira := _barreira_de_acao()) is not None:
+        return barreira
+
+    def dentro(conn):
+        if conn.execute("SELECT 1 FROM prazo WHERE id = ?", (prazo_id,)).fetchone() is None:
+            raise _AcaoFalhou("Prazo não encontrado.", ausente=True)
+        if com_versao:
+            _versao_confere(conn, prazo_id)
+        return acao(conn)
+
+    padrao = f"/prazos/{prazo_id}"
+    try:
+        mudou = _rodar_acao(dentro)
+    except _AcaoFalhou as exc:
+        flash(exc.texto, "erro")
+        if exc.destino:
+            return redirect(exc.destino)  # a tela velha não manda o advogado de volta a ela
+        if exc.ausente:
+            padrao = "/prazos"
+    else:
+        destino = _destino_seguro(request.form.get("voltar"), padrao)
+        if com_link_do_prazo and mudou is not False and destino != padrao:
+            # a linha sai da lista: a mensagem leva ao prazo, onde está o «Desfazer»
+            flash(Markup('{} <a href="{}">Abrir o prazo para desfazer</a>.').format(
+                mensagem, padrao), "ok")
+        else:
+            flash(sem_mudanca if mudou is False else mensagem, "ok")
+        return redirect(destino)
+    return redirect(_destino_seguro(request.form.get("voltar"), padrao))
+
+
+def _campos_da_correcao(p: dict) -> dict:
+    """Só o que o advogado mudou: campo igual ao que já está não vai (o prazo com data fatal
+    informada recusa dias, início, ciência e dobro). Data vazia limpa a data. Sem nada novo,
+    nada se corrige: o prazo conferido não volta a pedir conferência à toa."""
+    form = request.form
+    campos: dict = {}
+    if form.get("ato") is not None:
+        # em branco também vai: quem mandou o campo vazio é recusado (a não ser que escolha da lista)
+        ato = " ".join(form["ato"].split())[:nucleo_prazos_banco.LIMITE_ATO]
+        # ato em branco só passa com um ato da lista: sem ele, vai e é recusado, mesmo que o
+        # gravado também esteja em branco (linha que o Lex ainda não leu)
+        if ato != p["ato"] or (not ato and not form.get("codigo")):
+            campos["ato"] = ato
+    if form.get("dias"):
+        try:
+            dias = int(form["dias"])
+        except ValueError:
+            raise nucleo_prazos_banco.PrazoInvalido("Informe os dias, de 1 a 365.") from None
+        if dias != p["dias"]:
+            campos["dias"] = dias
+    if form.get("unidade") and form["unidade"] != p["unidade"]:
+        campos["unidade"] = form["unidade"]
+    if form.get("codigo") and form["codigo"] != p["codigo_ato"]:
+        campos["codigo"] = form["codigo"]
+    if "dobro" in form and (form["dobro"] == "1") != bool(p["dobro"]):
+        campos["dobro"] = form["dobro"] == "1"
+    for nome, atual in (("inicio", p["inicio_informado"]), ("fatal_informada", p["fatal_informada"]),
+                        ("ciencia", p["ciencia"])):
+        if form.get(nome) is not None and form[nome].strip() != (atual or ""):
+            campos[nome] = form[nome].strip()
+    if not campos:
+        raise nucleo_prazos_banco.PrazoInvalido(MSG_NADA_MUDOU)
+    return campos
+
+
+@app.route("/prazos/<int:prazo_id>/conferir", methods=["POST"])
+def prazo_conferir(prazo_id: int):
+    """«Conferir»: o clique do advogado, o único caminho até `conferido`. Só por POST, com
+    login, fora do modo apresentação, e o registro diz quem clicou."""
+    return _acao_de_prazo(prazo_id, lambda c: nucleo_prazos_banco.conferir(
+        c, prazo_id, por=_por_quem()), "Prazo conferido.", com_versao=True)
+
+
+@app.route("/prazos/<int:prazo_id>/corrigir", methods=["POST"])
+def prazo_corrigir(prazo_id: int):
+    def acao(c):
+        campos = _campos_da_correcao(nucleo_prazos_banco.obter(c, prazo_id))
+        nucleo_prazos_banco.corrigir(c, prazo_id, por=_por_quem(),
+                                     hoje=painel_dados.hoje_cuiaba(), **campos)
+    return _acao_de_prazo(prazo_id, acao, "Prazo corrigido. Confira a conta.", com_versao=True)
+
+
+@app.route("/prazos/<int:prazo_id>/descartar", methods=["POST"])
+def prazo_descartar(prazo_id: int):
+    """«Não há prazo aqui». Nada é apagado."""
+    return _acao_de_prazo(prazo_id, lambda c: nucleo_prazos_banco.descartar(
+        c, prazo_id, por=_por_quem()), "Marcado: não há prazo aqui.", com_versao=True,
+        sem_mudanca="Nada mudou: o prazo já estava marcado como sem prazo aqui.")
+
+
+@app.route("/prazos/<int:prazo_id>/trabalho", methods=["POST"])
+def prazo_trabalho(prazo_id: int):
+    def acao(c):
+        data = request.form.get("data") or None
+        d = None
+        if not data:
+            try:
+                d = int(request.form.get("d", ""))
+            except ValueError:
+                raise nucleo_prazos_banco.PrazoInvalido("Escolha o dia de trabalho.") from None
+        nucleo_prazos_banco.escolher_trabalho(c, prazo_id, d=d, data=data, por=_por_quem())
+    return _acao_de_prazo(prazo_id, acao, "Data de trabalho marcada.", com_versao=True)
+
+
+@app.route("/prazos/<int:prazo_id>/dobro", methods=["POST"])
+def prazo_dobro(prazo_id: int):
+    """Dobro nunca é automático: um clique liga ou desliga, e a conta refeita aparece na hora."""
+    ligado = request.form.get("ligado") == "1"
+    return _acao_de_prazo(prazo_id, lambda c: nucleo_prazos_banco.alternar_dobro(
+        c, prazo_id, ligado, por=_por_quem()),
+        "Prazo em dobro ligado. Confira a conta." if ligado else "Prazo em dobro desligado.",
+        com_versao=True, sem_mudanca=("Nada mudou: o prazo já estava em dobro." if ligado
+                                      else "Nada mudou: o prazo já estava sem dobro."))
+
+
+@app.route("/prazos/<int:prazo_id>/cumprido", methods=["POST"])
+def prazo_cumprido(prazo_id: int):
+    return _acao_de_prazo(prazo_id, lambda c: nucleo_prazos_banco.cumprir(
+        c, prazo_id, por=_por_quem()), "Prazo cumprido.", com_versao=True, com_link_do_prazo=True)
+
+
+@app.route("/prazos/<int:prazo_id>/desfazer-cumprido", methods=["POST"])
+def prazo_desfazer_cumprido(prazo_id: int):
+    return _acao_de_prazo(prazo_id, lambda c: nucleo_prazos_banco.desfazer_cumprido(
+        c, prazo_id, por=_por_quem()), "Desfeito: o prazo voltou a correr.", com_versao=True)
+
+
+@app.route("/prazos/<int:prazo_id>/fatal", methods=["POST"])
+def prazo_fatal(prazo_id: int):
+    maior = request.form.get("maior") == "1"
+    return _acao_de_prazo(prazo_id, lambda c: nucleo_prazos_banco.escolher_fatal(
+        c, prazo_id, maior, por=_por_quem()), "Data fatal trocada. Confira a conta.",
+        com_versao=True, sem_mudanca="Nada mudou: o prazo já usa esta data.")
+
+
+@app.route("/prazos/<int:prazo_id>/ciencia", methods=["POST"])
+def prazo_ciencia(prazo_id: int):
+    """O advogado abriu a intimação no PJe e diz o dia. O sistema nunca abre por conta própria."""
+    return _acao_de_prazo(prazo_id, lambda c: nucleo_prazos_banco.informar_ciencia(
+        c, prazo_id, request.form.get("data") or "", por=_por_quem(),
+        hoje=painel_dados.hoje_cuiaba()), "Data da ciência guardada.", com_versao=True)
+
+
+@app.route("/prazos/<int:prazo_id>/ler-de-novo", methods=["POST"])
+def prazo_ler_de_novo(prazo_id: int):
+    def acao(c):
+        p = nucleo_prazos_banco.obter(c, prazo_id)
+        if nucleo_prazos_banco.processo_descartado(c, p["numero"]):
+            raise nucleo_prazos_banco.PrazoInvalido(MSG_NAO_E_MEU)
+        nucleo_prazos_banco.ler_de_novo(c, prazo_id, por=_por_quem())
+    return _acao_de_prazo(prazo_id, acao, "O Lex vai ler de novo.", com_versao=True)
+
+
+def _acao_no_calendario(acao, mensagem: str, refaz_datas: bool = True):
+    """Mudou o calendário: os prazos em aberto são refeitos na mesma transação (`acao` devolve
+    quantos pedem atenção), e o aviso diz quantos são. Se a conta não sai, o dia também não
+    fica, e a tela diz isso: as datas ficariam velhas com o calendário novo."""
+    if (barreira := _barreira_de_acao()) is not None:
+        return barreira
+    try:
+        resultado = _rodar_acao(acao, MSG_DATAS_NAO_REFEITAS if refaz_datas else MSG_PRAZO_FALHOU)
+    except _AcaoFalhou as exc:
+        flash(exc.texto, "erro")
+    else:
+        atencao, extra = resultado if isinstance(resultado, tuple) else (resultado, "")
+        if atencao:
+            mensagem += (" 1 prazo pede atenção: confira a data." if atencao == 1
+                         else f" {atencao} prazos pedem atenção: confira as datas.")
+        flash(f"{mensagem} {extra}".strip(), "ok")
+    return redirect("/configuracoes/prazos")
+
+
+@app.route("/configuracoes/prazos/padrao", methods=["POST"])
+def configuracoes_prazos_padrao():
+    def acao(c):
+        try:
+            d = int(request.form.get("d", ""))
+        except ValueError:
+            raise nucleo_prazos_banco.PrazoInvalido("Escolha D-0, D-1, D-2 ou D-3.") from None
+        nucleo_prazos_banco.definir_d_padrao(c, d, por=_por_quem())
+        return 0
+    return _acao_no_calendario(acao, "Padrão da data de trabalho guardado.", refaz_datas=False)
+
+
+@app.route("/configuracoes/prazos/dia", methods=["POST"])
+def configuracoes_prazos_incluir():
+    f = request.form
+
+    def acao(c):
+        _, atencao = nucleo_prazos_banco.incluir_dia(
+            c, f.get("data", ""), f.get("tribunal", ""), f.get("comarca", ""), f.get("tipo", ""),
+            f.get("descricao", ""), f.get("fonte", ""), origem=f.get("origem") or "manual",
+            por=_por_quem())
+        comarca = " ".join(f.get("comarca", "").split())
+        extra = ""
+        if comarca and not nucleo_prazos_banco.comarca_casa_com_algum(
+                c, f.get("tribunal", ""), comarca):
+            extra = (f"A comarca «{comarca}» só vale onde o órgão julgador do processo traz "
+                     "exatamente esse nome, e nenhum processo seu casa com ela agora.")
+        return atencao, extra
+    return _acao_no_calendario(acao, "Dia incluído.")
+
+
+@app.route("/configuracoes/prazos/dia/<int:dia_id>/corrigir", methods=["POST"])
+def configuracoes_prazos_corrigir_dia(dia_id: int):
+    f = request.form
+    return _acao_no_calendario(lambda c: nucleo_prazos_banco.corrigir_dia(
+        c, dia_id, tipo=f.get("tipo"), descricao=f.get("descricao"), fonte=f.get("fonte"),
+        por=_por_quem()), "Dia corrigido.")
+
+
+@app.route("/configuracoes/prazos/dia/<int:dia_id>/desativar", methods=["POST"])
+def configuracoes_prazos_desativar(dia_id: int):
+    return _acao_no_calendario(lambda c: nucleo_prazos_banco.desativar_dia(
+        c, dia_id, por=_por_quem()), "Dia retirado da conta. A linha fica guardada.")
+
+
+@app.route("/configuracoes/prazos/agenda/gerar", methods=["POST"])
+def configuracoes_prazos_agenda_gerar():
+    """Gera o endereço da agenda (o anterior deixa de valer) e o mostra UMA vez, na própria
+    resposta: nunca em aviso de sessão (o cookie é lido pelo navegador), nunca em redirecionamento,
+    nunca em registro. A página é montada dentro da mesma transação que grava o endereço: se
+    qualquer parte falhar, nada é gravado e o endereço antigo continua valendo. Recarregar a
+    página gera outro endereço, e o que se perdeu não volta."""
+    if (barreira := _barreira_de_acao()) is not None:
+        return barreira
+
+    def acao(conn):
+        token = nucleo_agenda.gerar_token(conn)
+        contexto = _contexto_das_configuracoes_de_prazos(conn)
+        # Atrás do nginx o Flask vê http: na produção (com login) o endereço é sempre https.
+        contexto["agenda_url"] = url_for("agenda_ics", t=token, _external=True,
+                                         _scheme="https" if _login_exigido() else "http")
+        contexto["agenda_ligada"] = True
+        contexto["agenda_criada_em"] = nucleo_agenda.criado_em(conn)[:10]
+        return render_template("configuracoes_prazos.html", **contexto)
+
+    try:
+        pagina = _rodar_acao(acao)
+    except _AcaoFalhou as exc:
+        flash(exc.texto, "erro")
+        return redirect(url_for("configuracoes_prazos"))
+    resposta = make_response(pagina)
+    resposta.headers["Cache-Control"] = "no-store"
+    return resposta
+
+
+@app.route("/configuracoes/prazos/agenda/revogar", methods=["POST"])
+def configuracoes_prazos_agenda_revogar():
+    if (barreira := _barreira_de_acao()) is not None:
+        return barreira
+    try:
+        _rodar_acao(nucleo_agenda.revogar_token)
+    except _AcaoFalhou as exc:
+        flash(exc.texto, "erro")
+    else:
+        flash("Endereço revogado. A agenda assinada para de atualizar.", "ok")
+    return redirect(url_for("configuracoes_prazos"))
+
+
+@app.route("/agenda/baixar")
+def agenda_baixar():
+    """O arquivo da agenda, para importar. Pede login (o filtro de pedidos) e some no modo
+    apresentação (403). É o caminho da instalação local, cujo endereço 127.0.0.1 o celular não
+    alcança. O conteúdo vem do mesmo `montar_ics` da assinatura: número do processo e ato da
+    lista, sem nome. Falha nossa: frase simples, sem detalhe, sem cache; só o tipo vai ao
+    registro."""
+    conn = None
+    try:
+        conn = banco.conectar()
+        resposta = Response(nucleo_agenda.montar_ics(conn), mimetype="text/calendar")
+        resposta.headers["Content-Disposition"] = "attachment; filename=prazos.ics"
+    except Exception as exc:  # noqa: BLE001 - a frase é fixa; o que o erro diz não vai à tela
+        logging.getLogger(__name__).warning("agenda: o arquivo falhou (%s)", type(exc).__name__)
+        resposta = Response("Não foi possível montar o arquivo da agenda agora. Tente de novo.",
+                            status=503, mimetype="text/plain")
+    finally:
+        if conn is not None:
+            conn.close()
+    resposta.headers["Cache-Control"] = "no-store"
+    resposta.headers["X-Content-Type-Options"] = "nosniff"
+    return resposta
+
+
+@app.route("/agenda.ics")
+def agenda_ics():
+    """A agenda assinada, sem login e com o token próprio. O token vai na consulta, não no
+    caminho. O que este código garante: ele não registra a consulta (nem o token, nem o erro, só o
+    tipo da falha), e o `access_log` do nginx da produção também não a guarda (`$uri`, sem
+    consulta nem referer). O que NÃO está garantido aqui: o `error_log` do nginx escreve a
+    requisição com a consulta quando o painel está fora do ar (502), e o bloco `:80` que o certbot
+    cria pode usar o registro padrão. Isso se confere no servidor. Sempre sem cache. Token ausente,
+    errado ou revogado: 403 sem motivo; qualquer falha nossa: 503 sem detalhe."""
+    conn = None
+    try:
+        # Um navegador com o modo apresentação ligado não baixa números reais. A resposta é texto
+        # puro, não a página do painel (ela repete o endereço pedido, com o token, num campo).
+        # O serviço de calendário não tem a sessão do navegador, então não é afetado.
+        if _modo_apresentacao():
+            resposta = Response(MENSAGEM_APRESENTACAO, status=403, mimetype="text/plain")
+        else:
+            conn = banco.conectar()
+            if nucleo_agenda.token_valido(conn, request.args.get("t")):
+                resposta = Response(nucleo_agenda.montar_ics(conn), mimetype="text/calendar")
+            else:
+                resposta = Response("Agenda indisponível.", status=403, mimetype="text/plain")
+    except Exception as exc:  # noqa: BLE001 - o serviço de calendário tenta de novo e mantém o que tem
+        logging.getLogger(__name__).warning("agenda: falhou (%s)", type(exc).__name__)
+        resposta = Response("Agenda indisponível.", status=503, mimetype="text/plain")
+        resposta.headers["Retry-After"] = "300"
+    finally:
+        if conn is not None:
+            conn.close()
+    resposta.headers["Cache-Control"] = "no-store"
+    resposta.headers["Referrer-Policy"] = "no-referrer"
+    resposta.headers["X-Content-Type-Options"] = "nosniff"
+    return resposta
 
 
 @app.route("/carteira/exportar")

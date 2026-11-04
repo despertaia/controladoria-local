@@ -31,6 +31,9 @@ SEM_TIPO_SEM_EXPLICACAO = "o lex não teve segurança sobre o tipo de peça"
 CHAVE_HASH = "ponte_chave_hash"
 CHAVE_CRIADA_EM = "ponte_chave_criada_em"
 ULTIMO_CONTATO = "ponte_ultimo_contato"
+# O leitor de prazos tem o seu próprio último contato: consultar a fila de leitura não diz nada
+# sobre o laço do squad, e `mac_conectado` continua falando só dele.
+ULTIMO_CONTATO_DO_LEITOR = "ponte_leitor_ultimo_contato"
 CLAUDE_OK = "ponte_claude_ok"  # "1"/"0": o Mac tem (ou não) acesso ao plano do Lex
 CLAUDE_OK_EM = "ponte_claude_ok_em"
 CHAVE_INVALIDA_N = "ponte_chave_invalida_n"  # tentativas com chave errada (sem evento)
@@ -91,6 +94,11 @@ def ultimo_contato(conn: sqlite3.Connection) -> str | None:
     return config.ler(conn, ULTIMO_CONTATO) or None
 
 
+def registrar_contato_do_leitor(conn: sqlite3.Connection) -> None:
+    """Anota que o leitor de prazos consultou ou respondeu a fila de leitura."""
+    config.gravar(conn, ULTIMO_CONTATO_DO_LEITOR, eventos.agora())
+
+
 def registrar_chave_invalida(conn: sqlite3.Connection) -> None:
     """Conta a tentativa com chave inválida (contador e horário; sem evento, para um
     robô batendo na porta não inchar o registro)."""
@@ -122,6 +130,11 @@ def _recente(texto: str | None, agora: datetime) -> bool:
 def mac_conectado(conn: sqlite3.Connection, agora: datetime) -> bool:
     """O Mac falou com o painel nos últimos `CONTATO_RECENTE_MINUTOS` minutos."""
     return _recente(ultimo_contato(conn), agora)
+
+
+def leitor_conectado(conn: sqlite3.Connection, agora: datetime) -> bool:
+    """O leitor de prazos falou com o painel nos últimos `CONTATO_RECENTE_MINUTOS` minutos."""
+    return _recente(config.ler(conn, ULTIMO_CONTATO_DO_LEITOR) or None, agora)
 
 
 def mac_sem_plano(conn: sqlite3.Connection, agora: datetime) -> bool:

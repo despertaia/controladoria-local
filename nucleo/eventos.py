@@ -27,6 +27,11 @@ def agora() -> str:
     return datetime.now(tribunal.fuso()).isoformat(timespec="seconds")
 
 
+def agora_fino() -> str:
+    """Como `agora`, com microssegundos: duas mudanças no mesmo segundo ainda se distinguem."""
+    return datetime.now(tribunal.fuso()).isoformat(timespec="microseconds")
+
+
 def registrar(conn: sqlite3.Connection, tipo: str, numero: str | None = None,
               dados: dict | None = None, quando: str | None = None) -> int:
     cursor = conn.execute(

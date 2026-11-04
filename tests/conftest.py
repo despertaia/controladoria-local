@@ -3,6 +3,14 @@
 import pytest
 
 
+def pytest_make_parametrize_id(config, val, argname):
+    """Parâmetro de texto longo não vira nome de teste: o nome vai para a variável de ambiente
+    PYTEST_CURRENT_TEST, que no Windows tem limite, e para o relatório."""
+    if isinstance(val, (str, bytes)) and len(val) > 100:
+        return f"{argname}-{len(val)}-caracteres"
+    return None
+
+
 @pytest.fixture(autouse=True)
 def _csrf_desligado_por_padrao():
     """Os testes de tela antigos postam sem token; tests/test_csrf.py religa e
@@ -60,3 +68,13 @@ def _versao_sem_rede(monkeypatch):
     versao.limpar_cache()
     yield
     versao.limpar_cache()
+
+
+@pytest.fixture(autouse=True)
+def _leitura_sem_fio_de_verdade(request, monkeypatch):
+    """O serviço do Mac e o modo local sobem o fio de leitura de prazo. Num teste ele nunca
+    roda: leria a chave de verdade das Chaves e falaria com o painel de verdade."""
+    if request.node.name == "test_em_thread_para_com_o_sinal":
+        return
+    from ponte_mac import leitor
+    monkeypatch.setattr(leitor, "em_thread", lambda *a, **k: None)

@@ -109,7 +109,7 @@
     <div class="acoes-arquivo">
       {% for acao in detalhe.arquivo.acoes %}
       {% set rota, rotulo, pergunta = botoes_arquivo[acao] %}
-      <form method="post" action="{{ url_for(rota) }}" onsubmit="return confirm('{{ pergunta }}');">
+      <form method="post" action="{{ url_for(rota) }}" onsubmit="return confirm('{{ pergunta }}{% if detalhe.arquivo.aviso_prazos and acao in ('arquivar', 'excluir') %} {{ detalhe.arquivo.aviso_prazos }}{% endif %}');">
         <input type="hidden" name="csrf" value="{{ csrf_token() }}">
         <input type="hidden" name="numero" value="{{ numero }}">
         <input type="hidden" name="voltar" value="{{ url_for('processo', numero=numero) }}">

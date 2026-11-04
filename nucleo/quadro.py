@@ -6,10 +6,13 @@ Nada aqui faz commit: quem chama agrupa numa transação (`with conn:`)."""
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 from datetime import date, datetime, timedelta
 
-from nucleo import config, eventos, tarefas_fila
+from nucleo import config, eventos, prazos_banco, tarefas_fila
+
+log = logging.getLogger(__name__)
 
 JANELA_DIAS = 15
 COLUNAS = {"chegou": "Chegou", "acao": "Precisa de ação",
@@ -77,6 +80,15 @@ class MovimentoInvalido(ValueError):
     """Movimento fora da tabela ou impossível agora (a mensagem vai para a tela)."""
 
 
+MSG_PRAZOS_NAO_VOLTARAM = ("Não foi possível mover o cartão. Os prazos dele continuam como "
+                           "estavam. Tente de novo.")
+
+
+class PrazosNaoVoltaram(MovimentoInvalido):
+    """Ao tirar o cartão de Protocolado, os prazos que ele cumpriu não voltaram: o movimento
+    inteiro foi desfeito. A mensagem é fixa; o texto do erro de baixo não vai para a tela."""
+
+
 def processo_elegivel(conn: sqlite3.Connection, numero: str) -> bool:
     """Gera cartão: está no banco, não está arquivado (pelo tribunal ou por você), não está
     na lixeira e não foi descartado (descartado que passou a ter a OAB do advogado volta a
@@ -134,6 +146,7 @@ def adicionar_item(conn: sqlite3.Connection, numero: str, tipo: str, ref: str,
                           {"demanda": demanda_id, "tipo": tipo, "ref": ref})
     conn.execute("INSERT INTO demanda_item (demanda_id, tipo, ref, data) VALUES (?, ?, ?, ?)",
                  (demanda_id, tipo, ref, data_iso))
+    prazos_banco.criar_para_item(conn, numero, demanda_id, tipo, ref, data_iso)
     return demanda_id, criou
 
 
@@ -145,8 +158,22 @@ def _demanda(conn: sqlite3.Connection, demanda_id: int) -> sqlite3.Row:
 
 
 def mover(conn: sqlite3.Connection, demanda_id: int, para: str, por: str, *,
-          orientacao: str = "", ajuste: str = "", agora: datetime | None = None,
+          orientacao: str = "", agora: datetime | None = None, ajuste: str = "",
           motivo: str = "") -> dict:
+    """Move o cartão (ver `_mover`). Ao sair de Protocolado, o movimento e o desfazer dos
+    prazos são uma coisa só: se o desfazer falhar, o cartão não se move."""
+    de = conn.execute("SELECT coluna FROM demanda WHERE id = ?", (demanda_id,)).fetchone()
+    if de is not None and de["coluna"] == "protocolado":
+        with prazos_banco.isolado(conn):
+            return _mover(conn, demanda_id, para, por, orientacao=orientacao, ajuste=ajuste,
+                          agora=agora, motivo=motivo)
+    return _mover(conn, demanda_id, para, por, orientacao=orientacao, ajuste=ajuste,
+                  agora=agora, motivo=motivo)
+
+
+def _mover(conn: sqlite3.Connection, demanda_id: int, para: str, por: str, *,
+           orientacao: str = "", ajuste: str = "", agora: datetime | None = None,
+           motivo: str = "") -> dict:
     """Move o cartão. A gravação é condicional ao que foi lido (coluna e, no Lex, o
     estado): se outro processo mexeu no cartão no meio do caminho (o Mac reservou, a
     reserva venceu), nada muda e o movimento é recusado com mensagem amigável."""
@@ -235,10 +262,30 @@ def mover(conn: sqlite3.Connection, demanda_id: int, para: str, por: str, *,
     if para == "lex":
         eventos.registrar(conn, "lex_enfileirado", d["numero"],
                           {"demanda": demanda_id, "por": por, "modo": modo})
+    resultado = {"de": de, "para": para, "desfazer": DESFAZER.get((de, para))}
     if para == "protocolado":
         eventos.registrar(conn, "protocolado", d["numero"],
                           {"demanda": demanda_id, "por": por})
-    return {"de": de, "para": para, "desfazer": DESFAZER.get((de, para))}
+        # Falha nos prazos não desfaz o movimento, mas a tela avisa: o prazo fica aberto.
+        cumpridos = prazos_banco.sem_quebrar(
+            conn, "marcar os prazos do cartão como cumpridos",
+            lambda: prazos_banco.cumprir_do_cartao(conn, demanda_id))
+        if cumpridos is None:
+            resultado.update(prazos_cumpridos=0, prazos_nao_lidos=0, prazos_falha=True)
+        else:
+            resultado.update(prazos_cumpridos=cumpridos, prazos_nao_lidos=
+                             prazos_banco.contar_sem_data_do_cartao(conn, demanda_id))
+    if de == "protocolado":
+        # Sem isolar nem engolir: um prazo que ficasse cumprido com o cartão fora de
+        # Protocolado seria o lado errado. Se falhar, o movimento todo falha (ver `mover`).
+        try:
+            prazos_banco.desfazer_do_cartao(conn, demanda_id)
+        except prazos_banco.TransacaoPerdida:
+            raise
+        except Exception as exc:
+            log.warning("quadro: o desfazer dos prazos falhou (%s)", type(exc).__name__)
+            raise PrazosNaoVoltaram(MSG_PRAZOS_NAO_VOLTARAM) from exc
+    return resultado
 
 
 def tirar_do_quadro(conn: sqlite3.Connection, numero: str, por: str = "advogado",

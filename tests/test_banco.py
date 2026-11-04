@@ -260,7 +260,7 @@ def test_migracao_8_sobre_v7_preserva_processos(tmp_path):
     linha = conn.execute("SELECT advogado_atua, confirmado_em, arquivado_por_voce_em, "
                          "excluido_em, desarquivado_ref FROM processo").fetchone()
     assert tuple(linha) == (1, "2026-10-01", None, None, None)
-    assert conn.execute("PRAGMA user_version").fetchone()[0] == 8
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(banco.MIGRACOES)
     conn.close()
 
 
@@ -269,3 +269,44 @@ def test_migracao_8_so_acrescenta_colunas():
     sql = banco.MIGRACOES[7].upper()
     assert "DROP" not in sql and "DELETE" not in sql and "CREATE TABLE" not in sql
     assert sql.count("ALTER TABLE PROCESSO ADD COLUMN") == 3
+
+
+def test_migracao_9_tabelas_de_prazo(tmp_path):
+    conn = banco.conectar(str(tmp_path / "b.db"))
+    assert conn.execute("PRAGMA user_version").fetchone()[0] == len(banco.MIGRACOES) >= 9
+    assert {"numero", "demanda_id", "origem_tipo", "origem_ref", "estado", "ato", "dias",
+            "unidade", "rito", "origem_dos_dias", "trecho", "dobro", "disponibilizacao",
+            "publicacao", "inicio", "fatal", "fatal_alternativa", "trabalho", "d_escolhido",
+            "calculo", "versao_calendario", "ressalvas", "tentativas", "criado_em",
+            "conferido_em", "cumprido_em"} <= {r[1] for r in conn.execute(
+                "PRAGMA table_info(prazo)")}
+    assert {"data", "tribunal", "comarca", "tipo", "descricao", "fonte", "origem", "ativo"} <= {
+        r[1] for r in conn.execute("PRAGMA table_info(dia_forense)")}
+    assert conn.execute("SELECT valor FROM config WHERE chave = 'prazos_calendario_versao'"
+                        ).fetchone()[0] == "1"
+    conn.close()
+
+
+def test_migracao_9_sobre_v8_preserva_tudo(tmp_path):
+    caminho = str(tmp_path / "v8.db")
+    c = sqlite3.connect(caminho)
+    for i in range(8):
+        c.executescript(f"BEGIN;\n{banco.MIGRACOES[i]}\nPRAGMA user_version = {i + 1};\nCOMMIT;")
+    c.execute("INSERT INTO processo (numero, tribunal, advogado_atua) VALUES ('1', 'TJMT', 1)")
+    c.execute("INSERT INTO config (chave, valor) VALUES ('lex_automatico', '1')")
+    c.commit()
+    c.close()
+    conn = banco.conectar(caminho)
+    assert conn.execute("SELECT numero FROM processo").fetchone()[0] == "1"
+    assert conn.execute("SELECT valor FROM config WHERE chave = 'lex_automatico'"
+                        ).fetchone()[0] == "1"
+    assert conn.execute("SELECT COUNT(*) FROM prazo").fetchone()[0] == 0
+    assert conn.execute("SELECT COUNT(*) FROM dia_forense").fetchone()[0] > 100
+    conn.close()
+
+
+def test_migracao_9_so_acrescenta():
+    """Segura sobre o banco da produção: só tabelas novas e os dias do calendário."""
+    sql = banco.MIGRACOES[8].upper()
+    assert "DROP " not in sql and "DELETE " not in sql and "ALTER TABLE" not in sql
+    assert "UPDATE " not in sql

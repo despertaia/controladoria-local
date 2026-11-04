@@ -14,7 +14,7 @@ from datetime import date, datetime, timedelta
 from markupsafe import Markup, escape
 
 from captura.processo_parser import formatar_numero_cnj
-from nucleo import avisos, carteira, config, tarefas_fila, tribunal
+from nucleo import avisos, carteira, config, prazos_tela, tarefas_fila, tribunal
 from nucleo import ponte as nucleo_ponte
 from nucleo import quadro as nucleo_quadro
 from nucleo.carteira import data_de_referencia, listar, situacao
@@ -154,6 +154,7 @@ def estado_no_arquivo(conn: sqlite3.Connection, p, hoje: date) -> dict:
                  else f"Excluído em {data_br(p['excluido_em'])}; já saiu da lixeira")
     return {"estado": est, "faixa": faixa, "acoes": list(ACOES_POR_ESTADO[est]),
             "lex_trabalhando": nucleo_quadro.lex_trabalhando(conn, p["numero"]),
+            "aviso_prazos": prazos_tela.aviso_de_arquivar(conn, [p["numero"]], hoje),
             "voltou_br": _dia_mes(voltas_recentes(conn, hoje).get(p["numero"]))}
 
 
@@ -937,7 +938,8 @@ def _maiuscula(texto: str) -> str:
     return texto[:1].upper() + texto[1:]
 
 
-def _cartao(conn: sqlite3.Connection, d, hoje: date, agora: datetime | None = None) -> dict:
+def _cartao(conn: sqlite3.Connection, d, hoje: date, agora: datetime | None = None,
+            cals: prazos_tela._Calendarios | None = None) -> dict:
     itens = conn.execute("SELECT tipo, ref, data FROM demanda_item WHERE demanda_id = ? "
                          "ORDER BY data DESC, rowid DESC", (d["id"],)).fetchall()
     origens = []
@@ -969,6 +971,8 @@ def _cartao(conn: sqlite3.Connection, d, hoje: date, agora: datetime | None = No
     pronta = cron["pronta"]
     agora = agora or agora_cuiaba()
     return {
+        "selo_prazo": prazos_tela.selo_do_cartao(conn, d["id"], hoje, cals),
+        "aviso_prazos": prazos_tela.aviso_de_arquivar(conn, [d["numero"]], hoje),
         "tem_execucao": bool(execucoes),
         "reserva_vencida": reserva_vencida(d, agora),
         "squad_rotulo": (nome_do_squad(d["lex_squad_nome"], d["lex_squad"])
@@ -1003,6 +1007,7 @@ def _cartao(conn: sqlite3.Connection, d, hoje: date, agora: datetime | None = No
 
 def quadro(conn: sqlite3.Connection, hoje: date, agora: datetime | None = None) -> dict:
     agora = agora or agora_cuiaba()
+    cals = prazos_tela.calendarios(conn)  # os cartões do quadro dividem os calendários
     colunas = []
     for chave in nucleo_quadro.COLUNAS_VISIVEIS:
         linhas = conn.execute(
@@ -1010,7 +1015,7 @@ def quadro(conn: sqlite3.Connection, hoje: date, agora: datetime | None = None) 
             "LEFT JOIN processo p ON p.numero = d.numero WHERE d.coluna = ? "
             "ORDER BY d.referencia_em, d.id", (chave,)).fetchall()
         colunas.append({"chave": chave, "titulo": nucleo_quadro.COLUNAS[chave],
-                        "cartoes": [_cartao(conn, d, hoje, agora) for d in linhas]})
+                        "cartoes": [_cartao(conn, d, hoje, agora, cals) for d in linhas]})
     com_lex = nucleo_quadro.numeros_com_lex(conn)
     for coluna in colunas:
         for c in coluna["cartoes"]:

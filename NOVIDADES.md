@@ -2,6 +2,21 @@
 
 O que mudou em cada versão, a mais recente primeiro.
 
+## 1.6.0 — 04/11/2026
+
+- Aba Prazos: lista (Atrasados, Hoje, Esta semana, Depois, A conferir, A definir), semana e mês. O «A conferir» se divide em próximos e vencidos, e o vencido nunca esconde o que vence hoje. O contador do menu mostra os que vencem em até 2 dias úteis, os atrasados e os de data ilegível.
+- O Lex lê a publicação e o sistema conta, com o cálculo dia a dia na tela. É uma sugestão: o prazo só vale depois de você clicar em «Conferir» ou corrigir. Se o prazo mudou depois que você abriu a tela, a conferência é recusada e o aviso pede que você veja a data nova. A leitura não tem hora marcada: se preferir, preencha à mão.
+- Na dúvida, o sistema mostra a data mais cedo ou «prazo a definir», e diz por quê. Prazo em horas ou meses, direito material, rito eleitoral, tribunais superiores e início fora do diário ficam para você preencher.
+- Data de trabalho: D-0, D-1, D-2 ou D-3 em um clique, ou outro dia. O padrão do escritório fica em Configurações › Prazos.
+- Prazo em dobro nunca é automático: se houver indício, o sistema avisa, e você liga com um clique.
+- Quando o prazo passa pelo fim de ano, a data sem a suspensão de fim de ano aparece ao lado, com o aviso das exceções (réu preso, Maria da Penha, urgência, alimentos). Confira antes de agir.
+- Intimação do PJe: o sistema nunca abre o teor. Mostra «abra no PJe» e o dia em que a ciência acontece sozinha. Ela é comparada com as publicações do mesmo processo, no mesmo cartão ou em outro, quando chegou até 15 dias antes ou depois. Vale a data que vence primeiro, com a outra ao lado, e você pode escolher a maior. Se a ciência já foi registrada no PJe e o dia não é conhecido, a conta parte do envio até você informar a data.
+- Selo no cartão e faixa em todas as páginas, com um número por grupo da aba. Marque «Cumprido» no prazo. Levar o cartão a «Protocolado» marca como cumpridos os prazos que já têm data, com «Desfazer»; o que ainda não tem data continua aberto.
+- Arquivar não apaga o prazo: a confirmação avisa o próximo prazo, os atrasados e os sem data, e todos continuam na aba Prazos.
+- Calendário forense em Configurações › Prazos: feriados nacionais, fim de ano e os calendários de 2026 de TJMT, TJMG, TRF1 e TRF6, cada um com a fonte. Os dias seguidos iguais, como o recesso, aparecem numa linha só, «de tal dia a tal dia», e cada dia continua com os seus botões. O feriado municipal é seu: cadastre os da sua comarca. Sem calendário do ano, o sistema avisa.
+- Agenda: assine em Configurações › Prazos. Cada evento traz só o número do processo e o ato, sem nome de cliente. O que você ainda não conferiu sai marcado «[A CONFERIR]», e os prazos conferidos cuja data fatal passou há mais de um ano saem do arquivo. O lembrete pode não tocar em calendário assinado no Google. Na versão instalada no seu computador, o celular não alcança o endereço: use «Baixar agenda» e importe o arquivo, que não se atualiza sozinho.
+- Peça que o Lex ainda não sabe fazer: ele monta um time para ela, da mesma área do caso, e escreve a peça até o fim, com a conferência de citações e a sua revisão de sempre.
+
 ## 1.5.0 — 01/11/2026
 
 - Arquivar: tire da carteira ativa um processo que você não quer mais acompanhar. Os cartões sem peça pronta saem do quadro e a Controladoria para de consultá-lo no PJe e de baixar os autos. Se sair publicação nova, ele volta sozinho, com aviso.

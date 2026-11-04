@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% block titulo %}Prazos · Controladoria{% endblock %}
+{% block conteudo %}
+{# Tudo que vem do Lex, do Diário ou do usuário (ato, motivo, alerta, cliente) sai pelo escape
+   automático; nenhum filtro de HTML cru entra nesta tela. #}
+{% macro situacao(p) %}
+  {% if p.estado == 'aguardando_lex' and not lex_conectado %}
+  <span class="selo selo-alerta">O Lex não está lendo agora</span>
+  {% elif p.estado in ('aguardando_lex', 'a_conferir', 'a_definir') %}
+  <span class="selo selo-aviso">{{ p.estado_rotulo }}</span>
+  {% endif %}
+  {% if not p.fatal_legivel and p.fatal %}<span class="selo selo-alerta">Data ilegível</span>
+  {% elif p.atrasado %}<span class="selo selo-alerta">Atrasado</span>
+  {% elif p.urgente %}<span class="selo selo-alerta">Vence logo</span>{% endif %}
+{% endmacro %}
+
+{% macro linha(p) %}
+<li class="prazo-linha{% if p.atrasado %} prazo-atrasado{% elif p.urgente and p.fatal_legivel %} prazo-urgente{% endif %}">
+  <div class="prazo-principal">
+    <a class="prazo-ato" href="{{ url_for('prazo_tela', prazo_id=p.id) }}">{{ p.ato }}</a>
+    {{ situacao(p) }}
+    <span class="prazo-numero">{{ p.numero_formatado }}</span>
+    {% if p.cliente %}<span class="prazo-numero">{{ p.cliente }}</span>{% endif %}
+    {% if p.selo_processo %}<span class="selo selo-aviso">{{ p.selo_processo }}</span>{% endif %}
+    {% if p.alerta %}<span class="prazo-alerta">{{ p.alerta }}</span>{% endif %}
+    {% if p.motivo %}<span class="prazo-numero">{{ p.motivo }}</span>{% endif %}
+    {% if p.estado == 'aguardando_lex' and p.dias_na_fila > 1 %}<span class="prazo-alerta">Está na fila há {{ p.dias_na_fila }} dias. Se o prazo pode estar perto, preencha à mão.</span>{% endif %}
+  </div>
+  <div class="prazo-datas-linha">
+    {% if p.fatal_br %}<span>Fatal <strong>{{ p.fatal_br }}</strong></span>{% endif %}
+    {% if p.fatal_alternativa_br %}<span class="prazo-numero">outra conta: {{ p.fatal_alternativa_br }}</span>{% endif %}
+    {% if p.trabalho_br %}<span class="prazo-numero">Trabalho {{ p.trabalho_br }}</span>{% endif %}
+  </div>
+  <div class="prazo-acoes">
+    <a class="btn btn-pequeno{{ '' if p.estado == 'a_conferir' else ' btn-secundario' }}" href="{{ url_for('prazo_tela', prazo_id=p.id) }}">{{ 'Ver e conferir' if p.estado == 'a_conferir' and p.fatal_legivel else 'Abrir' }}</a>
+    {# Só o conferido se marca daqui, num clique. O resto passa pela tela do prazo, com confirmação. #}
+    {% if not modo_apresentacao and p.estado == 'conferido' %}
+    <form method="post" action="{{ url_for('prazo_cumprido', prazo_id=p.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      <input type="hidden" name="versao" value="{{ p.versao }}">
+      <input type="hidden" name="voltar" value="{{ url_for('prazos_lista') }}">
+      <button type="submit" class="btn btn-pequeno btn-secundario">Cumprido</button>
+    </form>
+    {% endif %}
+  </div>
+</li>
+{% endmacro %}
+
+<div class="cabecalho-pagina">
+  <div>
+    <p class="sobretitulo">Prazos</p>
+    <h1>Seus prazos</h1>
+    <p class="subtitulo">Sugestão do Lex, com a conta do sistema. Só vale depois de você conferir.</p>
+  </div>
+</div>
+<nav class="abas" aria-label="Vistas dos prazos">
+  {% for chave, rotulo in (('lista', 'Lista'), ('semana', 'Semana'), ('mes', 'Mês')) %}
+  <a href="{{ url_for('prazos_lista', vista=chave) }}"{% if vista == chave %} class="ativo" aria-current="page"{% endif %}>{{ rotulo }}</a>
+  {% endfor %}
+</nav>
+
+{% if vista == 'lista' %}
+  {% for chave, titulo, ajuda in (
+      ('atrasados', 'Atrasados', 'Já conferidos, com a data fatal no passado.'),
+      ('hoje', 'Hoje', ''),
+      ('semana', 'Esta semana', ''),
+      ('depois', 'Depois', ''),
+      ('a_conferir_proximos', 'A conferir', 'Nada vale até você conferir. Os que vencem primeiro vêm no alto.'),
+      ('a_conferir_vencidos', 'Vencidos a conferir', 'A data fatal já passou e ninguém conferiu. Veja se ainda há o que fazer.'),
+      ('a_definir', 'A definir', 'Sem data: preencha à mão ou espere o Lex.')) %}
+  {% set itens = grupos[chave] %}
+  <section class="cartao prazo-grupo{% if not itens %} prazo-grupo-vazio{% endif %}" aria-labelledby="grupo-{{ chave }}">
+    <h2 id="grupo-{{ chave }}">{{ titulo }} <span class="contador">{{ itens|length }}</span></h2>
+    {% if itens %}
+    {% if ajuda %}<p class="subtitulo prazo-ajuda">{{ ajuda }}</p>{% endif %}
+    {% if chave == 'a_definir' and not lex_conectado and itens|selectattr('estado', 'equalto', 'aguardando_lex')|list %}
+    <p class="aviso aviso-erro" role="status"><strong>O Lex não está lendo agora: preencha à mão ou confira a conexão do Lex.</strong> <a href="{{ url_for('configuracoes_lex') }}">Conectar o Lex</a></p>
+    {% endif %}
+    <ul class="prazo-linhas">
+      {% for p in itens %}{{ linha(p) }}{% endfor %}
+    </ul>
+    {% else %}<p class="subtitulo">Nada aqui.</p>{% endif %}
+  </section>
+  {% endfor %}
+{% else %}
+  <div class="grade-navegacao">
+    <a class="btn btn-pequeno btn-secundario" href="{{ url_for('prazos_lista', vista=vista, ref=grade.anterior) }}">← Anterior</a>
+    <strong>{{ grade.titulo }}</strong>
+    <span class="grade-navegacao-dir">
+      <a class="btn btn-pequeno btn-secundario" href="{{ url_for('prazos_lista', vista=vista) }}">Hoje</a>
+      <a class="btn btn-pequeno btn-secundario" href="{{ url_for('prazos_lista', vista=vista, ref=grade.proximo) }}">Próximo →</a>
+    </span>
+  </div>
+  <p class="grade-legenda"><span class="dia-item dia-trabalho">Data de trabalho</span> <span class="dia-item dia-fatal">Data fatal</span></p>
+  <div class="grade-rolagem">
+    <div class="grade-dias">
+      {% for nome in ('seg', 'ter', 'qua', 'qui', 'sex', 'sáb', 'dom') %}<div class="grade-cabeca">{{ nome }}</div>{% endfor %}
+      {% for d in grade.dias %}
+      <div class="grade-dia{% if d.e_hoje %} grade-hoje{% endif %}{% if d.fora_do_mes %} grade-fora{% endif %}">
+        <time class="grade-numero" datetime="{{ d.data }}"{% if d.e_hoje %} aria-current="date"{% endif %}>{{ d.numero_do_dia }}</time>
+        {% for i in d.itens %}
+        <a class="dia-item dia-{{ i.tipo }}" href="{{ url_for('prazo_tela', prazo_id=i.id) }}" title="{{ 'Fatal' if i.tipo == 'fatal' else 'Trabalho' }} · {{ i.ato }} · {{ i.numero_formatado }}">{{ 'Fatal' if i.tipo == 'fatal' else 'Trab.' }}: {% if i.a_conferir %}(a conferir) {% endif %}{{ i.ato }}</a>
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+{% endif %}
+{% endblock %}

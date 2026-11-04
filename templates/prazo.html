@@ -1,0 +1,262 @@
+{% extends "base.html" %}
+{% block titulo %}{{ prazo.ato }} · Prazos{% endblock %}
+{% block conteudo %}
+{# Ato, trecho, motivo, alerta, ressalvas, avisos e nomes vêm do Lex, do Diário ou do usuário:
+   saem todos pelo escape automático, sem filtro de HTML cru. Nenhum botão nasce em foco, para o
+   Enter nunca confirmar o que o advogado não viu. #}
+{% macro versao() %}<input type="hidden" name="versao" value="{{ prazo.versao }}">{% endmacro %}
+{% set aberto = prazo.estado not in ('cumprido', 'descartado') %}
+<div class="prazo-pagina">
+<a href="{{ url_for('prazos_lista') }}" class="voltar">← Voltar aos prazos</a>
+<div class="cabecalho-pagina">
+  <div>
+    <p class="sobretitulo"><a href="{{ url_for('processo', numero=prazo.numero) }}">{{ prazo.numero_formatado }}</a></p>
+    <h1>{{ prazo.ato }}</h1>
+    <p class="prazo-selos">
+      {% if prazo.estado == 'aguardando_lex' and prazo.processo_nao_e_meu %}<span class="selo selo-aviso">Processo marcado como “Não é meu”</span>
+      {% elif prazo.estado == 'aguardando_lex' and not lex_conectado %}<span class="selo selo-alerta">O Lex não está lendo agora</span>
+      {% elif prazo.estado == 'conferido' and not prazo.fatal %}<span class="selo selo-alerta">Conferido, sem data</span>
+      {% else %}<span class="selo selo-{{ 'ok' if prazo.estado == 'conferido' else 'aviso' }}">{{ prazo.estado_rotulo }}</span>{% endif %}
+      {% if prazo.selo_processo %}<span class="selo selo-aviso">{{ prazo.selo_processo }}</span>{% endif %}
+      {% if prazo.cliente %}<span class="prazo-numero">{{ prazo.cliente }}</span>{% endif %}
+    </p>
+  </div>
+</div>
+
+{% if prazo.estado in ('a_conferir', 'conferido') and prazo.fatal %}
+  {# De onde vem a data, dito como é: o Lex só "sugere" o que ele leu. #}
+  {% if prazo.fonte_da_conta == 'lex' %}
+  {% if prazo.estado == 'a_conferir' %}<p class="aviso aviso-aviso" role="note">Sugestão do Lex. Confira antes de confiar.</p>{% endif %}
+  {% elif prazo.fonte_da_conta == 'digitada' %}
+  {% if prazo.estado == 'a_conferir' %}<p class="aviso aviso-aviso" role="note">Data digitada por você. Confira antes de confiar.</p>{% endif %}
+  {% elif prazo.fonte_da_conta == 'aviso' %}
+  <p class="aviso aviso-aviso" role="note">Intimação do PJe: abra no PJe para saber o ato.</p>
+  {% elif prazo.estado == 'a_conferir' %}
+  <p class="aviso aviso-aviso" role="note">Preenchido por você, com a conta do sistema. Confira.</p>
+  {% endif %}
+{% endif %}
+{% if prazo.estado == 'conferido' and not prazo.fatal %}
+<p class="aviso aviso-erro" role="alert"><strong>Conferido, sem data: informe a data fatal.</strong> <a href="#corrigir">Ir para «Corrigir»</a></p>
+{% endif %}
+{% if prazo.lex_vai_ler %}
+  {% if lex_conectado %}
+  <p class="aviso aviso-aviso" role="status">O Lex ainda não leu esta publicação, e não há hora marcada para isso. Se preferir, preencha à mão.</p>
+  {% else %}
+  <p class="aviso aviso-erro" role="status"><strong>O Lex não está lendo agora: preencha à mão ou confira a conexão do Lex.</strong> O Lex ainda não leu esta publicação. <a href="{{ url_for('configuracoes_lex') }}">Conectar o Lex</a></p>
+  {% endif %}
+  {% if prazo.dias_na_fila > 1 %}<p class="aviso aviso-erro" role="note">Está na fila há {{ prazo.dias_na_fila }} dias. Se o prazo pode estar perto, preencha à mão.</p>{% endif %}
+{% elif prazo.motivo %}
+<p class="aviso" role="status">{{ prazo.motivo }}</p>
+{% endif %}
+{% if prazo.coberto_por %}
+<p class="aviso" role="note">Esta intimação do PJe já está coberta por <a href="{{ url_for('prazo_tela', prazo_id=prazo.coberto_por) }}">outro prazo do mesmo processo</a>.</p>
+{% endif %}
+
+<section class="cartao prazo-datas">
+  {% if prazo.fatal and not prazo.fatal_legivel %}
+  <p class="prazo-fatal">Data que não pôde ser lida: <strong>{{ prazo.fatal_br }}</strong></p>
+  <p class="aviso aviso-erro" role="alert">Esta data não pode ser conferida. Digite a data fatal em «Corrigir», mais abaixo.</p>
+  {% elif prazo.fatal %}
+  <p class="prazo-fatal">Data fatal <strong>{{ prazo.fatal_br }}</strong>
+    {% if aberto and prazo.atrasado %}<span class="selo selo-alerta">Atrasado</span>{% elif aberto and prazo.urgente %}<span class="selo selo-alerta">Vence logo</span>{% endif %}</p>
+  {% if prazo.alerta %}<p class="aviso aviso-erro" role="alert">{{ prazo.alerta }}</p>{% endif %}
+  {% if prazo.fatal_sem_suspensao_rotulo %}<p class="prazo-nota">{{ prazo.fatal_sem_suspensao_rotulo }}</p>{% endif %}
+
+  {% if prazo.fatal_alternativa_br %}
+  <div class="prazo-duas-datas">
+    {% if prazo.escolheu_maior %}
+    <p>Você escolheu a data maior. A que vence primeiro é <strong>{{ prazo.fatal_alternativa_br }}</strong>.</p>
+    {% else %}
+    <p>Vale a que vence primeiro. Outra conta dá <strong>{{ prazo.fatal_alternativa_br }}</strong>.</p>
+    {% endif %}
+    {% if prazo.fatal_alternativa_sem_suspensao_rotulo %}<p class="prazo-nota">Na outra conta: {{ prazo.fatal_alternativa_sem_suspensao_rotulo }}</p>{% endif %}
+    {% if prazo.pode_escolher_fatal and not modo_apresentacao %}
+    <p class="prazo-nota">Usar a data maior é arriscado: se a conta certa for a menor, o prazo pode vencer antes do que você pensa. Só escolha a maior se tiver certeza. Depois de escolher, confira de novo.</p>
+    <form method="post" action="{{ url_for('prazo_fatal', prazo_id=prazo.id) }}" class="prazo-inline">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      {{ versao() }}
+      <input type="hidden" name="maior" value="{{ '0' if prazo.escolheu_maior else '1' }}">
+      <button type="submit" class="btn btn-pequeno btn-secundario">{{ 'Voltar à que vence primeiro' if prazo.escolheu_maior else 'Usar a maior' }}</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endif %}
+
+  {% if prazo.avisos %}
+  <ul class="prazo-lista prazo-notas">{% for a in prazo.avisos %}<li>{{ a }}</li>{% endfor %}</ul>
+  {% endif %}
+  <p>Data de trabalho: <strong>{{ prazo.trabalho_br }}</strong>{% if prazo.outro_dia %} (escolhida por você){% endif %}</p>
+  {% else %}
+  <p class="prazo-fatal">{% if prazo.estado == 'sem_prazo' %}O Lex não viu prazo aqui{% elif prazo.estado == 'descartado' %}Você marcou: não há prazo aqui{% elif prazo.estado == 'conferido' %}Sem data fatal{% else %}Prazo a definir{% endif %}</p>
+  {% if prazo.alerta %}<p class="aviso aviso-erro" role="alert">{{ prazo.alerta }}</p>{% endif %}
+  {% endif %}
+
+  {% if prazo.dias %}<p>{{ prazo.dias }} {{ prazo.unidade_rotulo }}{% if prazo.dobro %}, em dobro{% endif %}{% if prazo.disponibilizacao_br %} · disponibilizado em {{ prazo.disponibilizacao_br }}{% endif %}</p>{% endif %}
+  {% if prazo.origem_rotulo %}
+  <p class="prazo-origem">{{ prazo.origem_rotulo }}.
+    {% if prazo.ato_da_lei %}{{ 'Ato lido' if prazo.fonte_da_conta == 'lex' else 'Ato' }}: «{{ prazo.ato }}». Na lista da lei: «{{ prazo.ato_da_lei }}» ({{ prazo.artigo_da_lei }}). Compare os dois.{% endif %}</p>
+  {% endif %}
+  {% if prazo.ciencia_br %}<p>Ciência informada: {{ prazo.ciencia_br }}</p>{% endif %}
+
+  {% if not modo_apresentacao %}
+  <div class="prazo-botoes">
+    {% if prazo.pode_conferir and prazo.fatal_legivel %}
+    <form method="post" action="{{ url_for('prazo_conferir', prazo_id=prazo.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      {{ versao() }}
+      <button type="submit" class="btn">Conferir</button>
+    </form>
+    {% endif %}
+    {% if prazo.pode_cumprir %}
+    <form method="post" action="{{ url_for('prazo_cumprido', prazo_id=prazo.id) }}"{% if prazo.estado != 'conferido' %} onsubmit="return confirm('Este prazo ainda não foi conferido. Marcar como cumprido mesmo assim?');"{% endif %}>
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      {{ versao() }}
+      <button type="submit" class="btn btn-secundario">Cumprido</button>
+    </form>
+    {% endif %}
+    {% if prazo.estado == 'cumprido' %}
+    <form method="post" action="{{ url_for('prazo_desfazer_cumprido', prazo_id=prazo.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      {{ versao() }}
+      <button type="submit" class="btn btn-secundario">Desfazer</button>
+    </form>
+    {% endif %}
+    {% if aberto %}
+    <form method="post" action="{{ url_for('prazo_descartar', prazo_id=prazo.id) }}" onsubmit="return confirm('Marcar que não há prazo aqui? O prazo sai das listas e da agenda. A linha fica guardada.');">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      {{ versao() }}
+      <button type="submit" class="btn btn-secundario">Não há prazo aqui</button>
+    </form>
+    {% endif %}
+    {% if prazo.pode_ler_de_novo %}
+    <form method="post" action="{{ url_for('prazo_ler_de_novo', prazo_id=prazo.id) }}" onsubmit="return confirm('Ler de novo descarta o que você preencheu ou corrigiu à mão neste prazo. Continuar?');">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      {{ versao() }}
+      <button type="submit" class="btn btn-secundario">Ler de novo</button>
+    </form>
+    {% endif %}
+  </div>
+  {% if prazo.pode_conferir and prazo.fatal_legivel %}<p class="subtitulo prazo-ajuda">«Conferir» diz ao sistema que você viu a conta e a data fatal. Só depois disso o prazo passa a valer.</p>{% endif %}
+  {% endif %}
+</section>
+
+{% if prazo.opcoes_d and not modo_apresentacao %}
+<section class="cartao">
+  <h2>Data de trabalho</h2>
+  <p class="subtitulo">Em dias úteis antes da fatal. Sem escolha, vale o padrão do escritório.</p>
+  <div class="prazo-botoes">
+    {% for o in prazo.opcoes_d %}
+    <form method="post" action="{{ url_for('prazo_trabalho', prazo_id=prazo.id) }}">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      {{ versao() }}
+      <input type="hidden" name="d" value="{{ o.d }}">
+      <button type="submit" class="btn btn-pequeno{{ '' if o.escolhido else ' btn-secundario' }}" aria-pressed="{{ 'true' if o.escolhido else 'false' }}">D-{{ o.d }} · {{ o.data_br }}</button>
+    </form>
+    {% endfor %}
+    <form method="post" action="{{ url_for('prazo_trabalho', prazo_id=prazo.id) }}" class="prazo-inline">
+      <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+      {{ versao() }}
+      <label>Outro dia <input type="date" name="data" max="{{ prazo.fatal }}" required></label>
+      <button type="submit" class="btn btn-pequeno btn-secundario">Marcar</button>
+    </form>
+  </div>
+  {% if not prazo.fatal_informada %}
+  <form method="post" action="{{ url_for('prazo_dobro', prazo_id=prazo.id) }}" class="prazo-dobro">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    {{ versao() }}
+    <input type="hidden" name="ligado" value="{{ '0' if prazo.dobro else '1' }}">
+    <p>Prazo em dobro: <strong>{{ 'ligado' if prazo.dobro else 'desligado' }}</strong>. O sistema nunca liga o dobro sozinho; a conta é refeita e pede nova conferência.</p>
+    <button type="submit" class="btn btn-pequeno btn-secundario">{{ 'Desligar o dobro' if prazo.dobro else 'Ligar o dobro' }}</button>
+  </form>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if prazo.trecho or prazo.publicacao_orgao or prazo.publicacao_link %}
+<section class="cartao">
+  <h2>A publicação</h2>
+  {% if prazo.publicacao_orgao %}<p class="subtitulo">{{ prazo.publicacao_orgao }}</p>{% endif %}
+  {% if prazo.trecho %}
+    {% if modo_apresentacao %}<p class="texto-oculto">{{ texto_oculto }}</p>{% else %}<blockquote class="prazo-trecho">{{ prazo.trecho }}</blockquote>{% endif %}
+  {% endif %}
+  {% if prazo.publicacao_link and not modo_apresentacao %}<p><a href="{{ prazo.publicacao_link }}" target="_blank" rel="noopener noreferrer">Abrir a publicação no tribunal</a></p>{% endif %}
+</section>
+{% endif %}
+
+{% if prazo.ressalvas %}
+<section class="cartao">
+  <h2>Ressalvas</h2>
+  <ul class="prazo-lista">{% for r in prazo.ressalvas %}<li>{{ r }}</li>{% endfor %}</ul>
+</section>
+{% endif %}
+
+{% if prazo.passos %}
+<section class="cartao">
+  <h2>A conta, dia a dia</h2>
+  <ol class="prazo-passos">{% for p in prazo.passos %}<li>{{ p }}</li>{% endfor %}</ol>
+  <p class="subtitulo">Versão do calendário usada: {{ prazo.versao_calendario }}.</p>
+  {% if prazo.alternativa %}
+  <details class="prazo-incluir"><summary>A outra conta</summary>
+    <ol class="prazo-passos">{% for p in prazo.alternativa_passos %}<li>{{ p }}</li>{% endfor %}</ol>
+    {% if prazo.alternativa_avisos %}<ul class="prazo-lista">{% for a in prazo.alternativa_avisos %}<li>{{ a }}</li>{% endfor %}</ul>{% endif %}
+  </details>
+  {% endif %}
+</section>
+{% endif %}
+
+{% if not modo_apresentacao %}
+{% if prazo.pode_informar_ciencia %}
+<section class="cartao" id="ciencia">
+  <h2>Abriu a intimação no PJe?</h2>
+  <p class="subtitulo">O sistema nunca abre a intimação por conta própria. Diga o dia da ciência, e a conta usa a leitura que vence primeiro.</p>
+  <form method="post" action="{{ url_for('prazo_ciencia', prazo_id=prazo.id) }}" class="prazo-inline">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    {{ versao() }}
+    <label>Data da ciência <input type="date" name="data" value="{{ prazo.ciencia or '' }}" required></label>
+    <button type="submit" class="btn btn-pequeno">Guardar</button>
+  </form>
+</section>
+{% endif %}
+{% if prazo.estado == 'cumprido' %}
+<p class="subtitulo">Este prazo está cumprido. Para corrigir, desfaça antes.</p>
+{% else %}
+<section class="cartao" id="corrigir">
+  <h2>Corrigir</h2>
+  <p class="subtitulo">{% if prazo.lex_vai_ler or prazo.estado == 'a_definir' %}Preencha à mão o que falta.{% else %}Corrija só o que está errado.{% endif %} A conta é refeita, e o prazo volta a «A conferir».</p>
+  <form method="post" action="{{ url_for('prazo_corrigir', prazo_id=prazo.id) }}" class="prazo-formulario">
+    <input type="hidden" name="csrf" value="{{ csrf_token() }}">
+    {{ versao() }}
+    <label>Ato da lista
+      <select name="codigo"><option value="">Fora da lista: preencho abaixo</option>
+        {% for c in prazo.lista_fechada %}<option value="{{ c.codigo }}"{% if c.codigo == prazo.codigo_ato %} selected{% endif %}>{{ c.ato }} ({{ c.dias }} {{ c.unidade }}, {{ c.artigo }})</option>{% endfor %}
+      </select></label>
+    <label>Ato <input type="text" name="ato" value="{{ prazo.ato_gravado }}" maxlength="{{ limite_do_ato }}" placeholder="Nome do ato (ou escolha um da lista)"></label>
+    <label>Quantidade <input type="number" name="dias" min="1" max="{{ max_dias }}" value="{{ prazo.dias or '' }}"></label>
+    <label>Unidade
+      <select name="unidade">
+        {% if not prazo.unidade %}<option value="" selected>Escolha</option>{% endif %}
+        {% for valor, rotulo in (('uteis', 'dias úteis'), ('corridos', 'dias corridos'), ('horas', 'horas'), ('meses', 'meses')) %}
+        <option value="{{ valor }}"{% if prazo.unidade == valor %} selected{% endif %}>{{ rotulo }}</option>
+        {% endfor %}
+      </select></label>
+    <label>Data de início, se não for a da publicação <input type="date" name="inicio" value="{{ prazo.inicio_informado or '' }}"></label>
+    <label>Data fatal digitada <small>(vale no lugar da conta; use para horas e meses)</small> <input type="date" name="fatal_informada" value="{{ prazo.fatal_informada or '' }}"></label>
+    <label>Prazo em dobro
+      <select name="dobro"><option value="0"{% if not prazo.dobro %} selected{% endif %}>Não</option><option value="1"{% if prazo.dobro %} selected{% endif %}>Sim</option></select></label>
+    <button type="submit" class="btn btn-secundario">Corrigir</button>
+  </form>
+</section>
+{% endif %}
+{% endif %}
+</div>
+<script>
+  // Depois de uma ação o navegador devolve a rolagem de antes e o aviso, no alto, ficaria fora
+  // da vista: um «Conferir» recusado pareceria não ter feito nada. Leva o aviso à vista.
+  (function () {
+    var aviso = document.querySelector('main [data-aviso-da-acao]');
+    if (!aviso) return;
+    try { history.scrollRestoration = 'manual'; } catch (e) {}
+    aviso.scrollIntoView({block: 'center'});
+  })();
+</script>
+{% endblock %}

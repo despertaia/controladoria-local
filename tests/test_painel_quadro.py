@@ -1,3 +1,4 @@
+import html as html_lib
 import pathlib
 import re
 
@@ -307,6 +308,90 @@ def test_protocolei_leva_a_protocolado(cliente):
     assert r.status_code == 200 and r.get_json()["desfazer"] == "revisao"
     assert _campos(cliente, "coluna") == ("protocolado",)
     assert "Protocolei" not in _fragmento(cliente)
+
+
+def test_protocolei_diz_quantos_prazos_marcou_como_cumpridos(cliente):
+    _peca_pronta(cliente, 0, "aprovado")
+    _sql(cliente, "UPDATE prazo SET estado = 'a_conferir'")
+    r = cliente.post("/demanda/1/mover", data={"para": "protocolado"}, headers=JSON)
+    assert "1 prazo marcado como cumprido." in r.get_data(as_text=True)
+
+
+def test_protocolei_avisa_do_prazo_ainda_sem_data(cliente):
+    _peca_pronta(cliente, 0, "aprovado")
+    r = cliente.post("/demanda/1/mover", data={"para": "protocolado"}, headers=JSON)
+    texto = r.get_data(as_text=True)
+    assert "1 ainda sem data continua aberto." in texto and "marcado como cumprido" not in texto
+
+
+def test_protocolei_avisa_quando_os_prazos_nao_foram_marcados(cliente, monkeypatch):
+    from nucleo import prazos_banco
+
+    def estoura(*args, **kwargs):
+        raise RuntimeError("falha de teste")
+    monkeypatch.setattr(prazos_banco, "cumprir_do_cartao", estoura)
+    _peca_pronta(cliente, 0, "aprovado")
+    r = cliente.post("/demanda/1/mover", data={"para": "protocolado"}, headers=JSON)
+    assert r.status_code == 200
+    assert ("O cartão foi movido, mas os prazos dele não foram marcados. "
+            "Confira na aba Prazos.") in r.get_json()["mensagem"]
+    assert _campos(cliente, "coluna") == ("protocolado",)
+
+
+MSG_NAO_MOVEU = ("Não foi possível mover o cartão. Os prazos dele continuam como estavam. "
+                 "Tente de novo.")
+
+
+def _protocolado(cliente):
+    _peca_pronta(cliente, 0, "aprovado")
+    _sql(cliente, "UPDATE prazo SET estado = 'a_conferir'")
+    cliente.post("/demanda/1/mover", data={"para": "protocolado"}, headers=JSON)
+    assert _campos(cliente, "coluna") == ("protocolado",)
+
+
+def _falha_no_desfazer(monkeypatch, erro):
+    from nucleo import prazos_banco
+
+    def estoura(conn, demanda_id):
+        raise erro
+    monkeypatch.setattr(prazos_banco, "desfazer_do_cartao", estoura)
+
+
+def _erros():
+    import sqlite3
+    from nucleo import prazos_banco
+    return [prazos_banco.PrazoInvalido("texto interno"), prazos_banco.TransacaoPerdida("x"),
+            sqlite3.IntegrityError("UNIQUE constraint failed: demanda.numero")]
+
+
+@pytest.mark.parametrize("indice", [0, 1, 2])
+def test_desfazer_que_falha_responde_com_mensagem_na_via_json(cliente, monkeypatch, indice):
+    _protocolado(cliente)
+    _falha_no_desfazer(monkeypatch, _erros()[indice])
+    r = cliente.post("/demanda/1/mover", data={"para": "revisao"}, headers=JSON)
+    assert r.status_code == 409 and r.get_json() == {"ok": False, "erro": MSG_NAO_MOVEU}
+    assert _campos(cliente, "coluna") == ("protocolado",)
+    assert "texto interno" not in r.get_data(as_text=True)
+
+
+@pytest.mark.parametrize("indice", [0, 1, 2])
+def test_desfazer_que_falha_responde_com_mensagem_no_post_simples(cliente, monkeypatch, indice):
+    _protocolado(cliente)
+    _falha_no_desfazer(monkeypatch, _erros()[indice])
+    r = cliente.post("/demanda/1/mover", data={"para": "revisao"}, follow_redirects=True)
+    texto = html_lib.unescape(r.get_data(as_text=True))
+    assert r.status_code == 200 and MSG_NAO_MOVEU in texto and "Já há um cartão" not in texto
+    assert _campos(cliente, "coluna") == ("protocolado",)
+
+
+def test_transacao_perdida_ao_mover_para_protocolado_tambem_vira_mensagem(cliente, monkeypatch):
+    from nucleo import prazos_banco
+
+    def perdeu(*_a, **_k):
+        raise prazos_banco.TransacaoPerdida("x")
+    monkeypatch.setattr(painel.nucleo_quadro, "mover", perdeu)
+    r = cliente.post("/demanda/1/mover", data={"para": "protocolado"}, headers=JSON)
+    assert r.status_code == 409 and r.get_json()["erro"] == MSG_NAO_MOVEU
 
 
 def test_todo_form_do_quadro_leva_csrf(cliente):

@@ -13,7 +13,7 @@ import time
 from datetime import date, timedelta
 
 from captura.mni_client import CredencialInvalidaError, MNIError
-from nucleo import avisos, carteira, conexao, eventos, quadro, tribunal
+from nucleo import avisos, carteira, conexao, eventos, prazos_banco, quadro, tribunal
 from nucleo.djen import DJENError, buscar_por_advogado, buscar_por_processo
 from nucleo.mni_fabrica import CredencialAusenteError, criar_cliente
 
@@ -209,5 +209,9 @@ def executar(conn: sqlite3.Connection, adv: carteira.Advogado, *, hoje: date,
     with conn:
         # Lê do banco: o que uma varredura interrompida deixou sem cartão entra agora.
         r["cartoes_novos"] += quadro.ligar(conn, hoje) + quadro.gerar_pendentes(conn, hoje)
+        prazos_banco.criar_dos_cartoes_abertos(conn)
+        # a falha nos prazos nunca derruba a varredura: fica no registro técnico
+        prazos_banco.sem_quebrar(conn, "atualizar as intimações do PJe",
+                                 lambda: prazos_banco.atualizar_avisos(conn))
         eventos.registrar(conn, "varredura_concluida", None, r)
     return r

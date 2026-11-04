@@ -380,3 +380,37 @@ def test_publicacao_nova_traz_o_arquivado_de_volta_e_vira_cartao(conn):
     assert conn.execute("SELECT arquivado_por_voce_em FROM processo WHERE numero = ?",
                         (C,)).fetchone()[0] is None
     assert [e["tipo"] for e in eventos.listar(conn, C)].count("processo_voltou") == 1
+
+
+def test_varredura_abre_os_prazos_dos_cartoes_ja_abertos(conn):
+    conn.execute("INSERT INTO processo (numero, tribunal, advogado_atua) "
+                 "VALUES ('00000010220248110041', 'TJMT', 1)")
+    conn.execute("INSERT INTO publicacao (id, numero, tribunal, data_disponibilizacao, texto) "
+                 "VALUES (77, '00000010220248110041', 'TJMT', '2026-08-01', 'x')")
+    d = conn.execute("INSERT INTO demanda (numero, coluna, referencia_em, criada_em, atualizada_em) "
+                     "VALUES ('00000010220248110041', 'autos', '2026-08-01', 'x', 'x')").lastrowid
+    conn.execute("INSERT INTO demanda_item (demanda_id, tipo, ref, data) "
+                 "VALUES (?, 'publicacao', '77', '2026-08-01')", (d,))
+    _rodar(conn, PJeFalso())
+    assert conn.execute("SELECT estado FROM prazo WHERE origem_ref = '77'").fetchone()[0] == "aguardando_lex"
+
+
+def test_falha_nos_prazos_dos_avisos_nao_derruba_a_varredura(conn, monkeypatch):
+    from nucleo import prazos_banco
+
+    def estoura(_conn):
+        raise RuntimeError("falha de teste")
+    monkeypatch.setattr(prazos_banco, "atualizar_avisos", estoura)
+    pje1 = PJeFalso({A: processo_do_cliente()}, avisos=[_aviso("9", B)])
+    r = _rodar(conn, pje1, obter=_djen(item_djen(1, A, data="2026-10-05")))
+    assert r["erros"] == [] and r["cartoes_novos"] == 2
+    assert "varredura_concluida" in [e["tipo"] for e in eventos.listar(conn)]
+
+
+def test_varredura_chama_a_atualizacao_dos_avisos_depois_de_gerar_os_cartoes(conn, monkeypatch):
+    from nucleo import prazos_banco
+    vistos = []
+    monkeypatch.setattr(prazos_banco, "atualizar_avisos",
+                        lambda c: vistos.append(c.execute("SELECT COUNT(*) FROM demanda").fetchone()[0]))
+    _rodar(conn, PJeFalso({A: processo_do_cliente()}, avisos=[_aviso("9", B)]))
+    assert vistos == [1]
